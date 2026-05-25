@@ -1,0 +1,10 @@
+.git
+.gradle
+build
+target
+benchmark
+k8s
+.devcontainer
+.github
+*.md
+LICENSE.txt

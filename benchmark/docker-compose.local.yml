@@ -1,0 +1,61 @@
+# Local benchmark stack. Runs Postgres + one app variant at a time.
+# Use scripts/run-local.sh for the benchmark — this file is for ad-hoc dev.
+#
+# Examples:
+#   docker compose -f benchmark/docker-compose.local.yml up postgres
+#   docker compose -f benchmark/docker-compose.local.yml --profile jvm up
+#   docker compose -f benchmark/docker-compose.local.yml --profile native up
+
+services:
+  postgres:
+    image: postgres:18.3
+    container_name: petclinic-postgres
+    environment:
+      POSTGRES_DB: petclinic
+      POSTGRES_USER: petclinic
+      POSTGRES_PASSWORD: petclinic
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petclinic"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  petclinic-jvm:
+    image: petclinic:jvm
+    container_name: petclinic-jvm
+    profiles: ["jvm"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: postgres
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/petclinic
+      POSTGRES_USER: petclinic
+      POSTGRES_PASS: petclinic
+    ports:
+      - "8080:8080"
+    cpus: 1.0
+    mem_limit: 512m
+
+  petclinic-native:
+    image: petclinic:native
+    container_name: petclinic-native
+    profiles: ["native"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: postgres
+      POSTGRES_URL: jdbc:postgresql://postgres:5432/petclinic
+      POSTGRES_USER: petclinic
+      POSTGRES_PASS: petclinic
+    ports:
+      - "8080:8080"
+    cpus: 1.0
+    mem_limit: 512m
+
+networks:
+  default:
+    name: petclinic-bench

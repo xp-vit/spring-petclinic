@@ -1,0 +1,13 @@
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /app
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY src/ src/
+RUN ./gradlew bootJar -x test -x checkstyleMain -x checkstyleTest -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon
+
+FROM eclipse-temurin:25-jre
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar app.jar
+RUN mkdir -p /var/log/petclinic
+EXPOSE 8080
+ENTRYPOINT ["java", "-Xlog:gc*,gc+heap=debug:file=/var/log/petclinic/gc.log:time,level,tags", "-jar", "app.jar"]
