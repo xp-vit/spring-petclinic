@@ -185,15 +185,18 @@ resource "aws_instance" "benchmark" {
     #!/bin/bash
     set -e
 
-    # Install Docker
+    # Docker + jq (awscli installed via snap below; the apt 'awscli' package
+    # was dropped in Ubuntu 24.04 Noble)
     apt-get update
-    apt-get install -y docker.io awscli jq
+    apt-get install -y docker.io jq gpg
     systemctl enable docker
     systemctl start docker
     usermod -aG docker ubuntu
 
-    # Install k6
-    apt-get install -y gpg
+    # AWS CLI v2 via snap (Ubuntu 24.04 has no apt awscli)
+    snap install aws-cli --classic
+
+    # k6
     curl -fsSL https://dl.k6.io/key.gpg | gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" > /etc/apt/sources.list.d/k6.list
     apt-get update

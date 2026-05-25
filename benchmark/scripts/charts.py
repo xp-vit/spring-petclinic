@@ -29,6 +29,11 @@ import pandas as pd
 VARIANTS = ["jvm", "native"]
 COLORS = {"jvm": "#e76f51", "native": "#2a9d8f"}
 
+# Seconds to drop from the start of each k6 CSV when computing steady-state
+# numbers (lets JIT warm up; native is unaffected).  Override with env
+# BENCH_WARMUP_S.
+WARMUP_S = float(os.environ.get("BENCH_WARMUP_S", "60"))
+
 
 def read_text(p: Path):
     try:
@@ -78,6 +83,57 @@ def load_k6_csv(p: Path):
     df = df.dropna(subset=["timestamp"])
     df["t"] = df["timestamp"] - df["timestamp"].min()
     return df
+
+
+def steady_state_stats(results_dir: Path, variant: str, kind: str = "k6") -> dict:
+    """Return {'rps', 'p50', 'p95', 'p99', 'count'} computed AFTER dropping
+    WARMUP_S from the beginning of the k6 CSV.  Lets the JIT settle before
+    we measure.  Returns {} if data missing."""
+    suffix = "k6-results.csv" if kind == "k6" else "peak-rps.csv"
+    p = results_dir / f"{variant}-{suffix}"
+    df = load_k6_csv(p)
+    if df is None or df.empty:
+        return {}
+    df = df[df["t"] >= WARMUP_S]
+    if df.empty:
+        return {}
+    reqs = df[df["metric_name"] == "http_reqs"]
+    dur = df[df["metric_name"] == "http_req_duration"]
+    if reqs.empty or dur.empty:
+        return {}
+    span = df["t"].max() - WARMUP_S
+    rps = len(reqs) / max(span, 1.0)
+    durs = pd.to_numeric(dur["metric_value"], errors="coerce").dropna()
+    return {
+        "rps": rps,
+        "p50": durs.quantile(0.50),
+        "p95": durs.quantile(0.95),
+        "p99": durs.quantile(0.99),
+        "count": int(len(reqs)),
+        "span_s": span,
+    }
+
+
+def write_steady_state_report(results_dir: Path, out: Path):
+    rows = []
+    for kind, label in (("k6", "Sustained (50 VUs, 10 min)"),
+                        ("peak", "Peak-RPS sweep (5 min ramp)")):
+        rows.append(f"## {label} — first {WARMUP_S:.0f}s dropped")
+        rows.append("")
+        rows.append("| Variant | RPS | p50 | p95 | p99 | Samples | Window |")
+        rows.append("|---------|-----|-----|-----|-----|---------|--------|")
+        for v in VARIANTS:
+            s = steady_state_stats(results_dir, v, kind)
+            if s:
+                rows.append(
+                    f"| {v} | {s['rps']:.1f}/s | {s['p50']:.1f}ms | "
+                    f"{s['p95']:.1f}ms | {s['p99']:.1f}ms | {s['count']} | "
+                    f"{s['span_s']:.0f}s |"
+                )
+            else:
+                rows.append(f"| {v} | N/A | N/A | N/A | N/A | 0 | 0s |")
+        rows.append("")
+    out.write_text("\n".join(rows))
 
 
 def chart_throughput_over_time(results_dir: Path, out: Path):
@@ -284,6 +340,47 @@ def chart_gc_pauses(results_dir: Path, out: Path):
     plt.close(fig)
 
 
+def chart_peak_rps(results_dir: Path, out: Path):
+    """Achieved RPS over time + p95 latency overlay from the peak-RPS sweep."""
+    fig, ax1 = plt.subplots(figsize=(10, 5))
+    ax2 = ax1.twinx()
+    plotted = False
+    saturation_notes = []
+    for v in VARIANTS:
+        df = load_k6_csv(results_dir / f"{v}-peak-rps.csv")
+        if df is None:
+            continue
+        reqs = df[df["metric_name"] == "http_reqs"]
+        dur = df[df["metric_name"] == "http_req_duration"]
+        if reqs.empty:
+            continue
+        bucket = (reqs["t"] // 5).astype(int) * 5
+        rps = reqs.groupby(bucket).size() / 5.0
+        ax1.plot(rps.index, rps.values, label=f"{v} RPS",
+                 color=COLORS[v], linewidth=2)
+        if not dur.empty:
+            dur_bucket = (dur["t"] // 5).astype(int) * 5
+            p95 = dur.groupby(dur_bucket)["metric_value"].quantile(0.95)
+            ax2.plot(p95.index, p95.values, label=f"{v} p95 (ms)",
+                     color=COLORS[v], linewidth=1.5, linestyle="--", alpha=0.7)
+        saturation_notes.append(f"{v} peak: {rps.max():.0f} req/s")
+        plotted = True
+    if not plotted:
+        plt.close(fig)
+        return
+    ax1.set_xlabel("Elapsed (s)")
+    ax1.set_ylabel("Achieved RPS (5s bucket)")
+    ax2.set_ylabel("p95 latency (ms, dashed)")
+    ax1.set_title("Peak-RPS sweep — " + " | ".join(saturation_notes))
+    ax1.grid(alpha=0.3)
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+
+
 def chart_summary_dashboard(results_dir: Path, out: Path):
     """Single 2x2 PNG combining startup, throughput, latency, memory.
     Designed for LinkedIn / blog hero image."""
@@ -385,7 +482,9 @@ def main():
     chart_cpu_over_time(results_dir, out_dir / "cpu-over-time.png")
     chart_image_size(results_dir, out_dir / "image-size-bar.png")
     chart_gc_pauses(results_dir, out_dir / "gc-pause-hist.png")
+    chart_peak_rps(results_dir, out_dir / "peak-rps.png")
     chart_summary_dashboard(results_dir, out_dir / "summary-dashboard.png")
+    write_steady_state_report(results_dir, results_dir / "steady-state-report.md")
 
     pngs = sorted(out_dir.glob("*.png"))
     print(f"Wrote {len(pngs)} charts to {out_dir}")

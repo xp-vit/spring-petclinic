@@ -108,8 +108,8 @@ start_stats_sampler() {
         memraw="${line##*|}"; memraw="${memraw%% /*}"  # e.g. "123.4MiB"
         mem=$(python3 -c "
 s='$memraw'.strip()
-m={'B':1,'KiB':1024,'MiB':1024**2,'GiB':1024**3,'KB':1000,'MB':1000**2,'GB':1000**3}
-for k,v in m.items():
+units=[('GiB',1024**3),('MiB',1024**2),('KiB',1024),('GB',1000**3),('MB',1000**2),('KB',1000),('B',1)]
+for k,v in units:
   if s.endswith(k): print(int(float(s[:-len(k)])*v)); break
 else: print(0)
 " 2>/dev/null || echo 0)

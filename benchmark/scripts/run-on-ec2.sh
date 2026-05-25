@@ -45,10 +45,13 @@ reset_db() {
 }
 
 # --- Stats sampler (CPU + RSS @ 1Hz) ---
+# Sets global STATS_PID; closes stdout/stderr in the background subshell so a
+# command-substitution caller doesn't deadlock on a never-closing pipe.
 start_stats_sampler() {
   local name="$1" out="$2"
   echo "ts,cpu_pct,mem_bytes" > "$out"
   (
+    set +e
     while docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; do
       local line ts cpu memraw mem
       line=$(docker stats "$name" --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null || true)
@@ -58,8 +61,8 @@ start_stats_sampler() {
         memraw="${line##*|}"; memraw="${memraw%% /*}"
         mem=$(python3 -c "
 s='$memraw'.strip()
-m={'B':1,'KiB':1024,'MiB':1024**2,'GiB':1024**3,'KB':1000,'MB':1000**2,'GB':1000**3}
-for k,v in m.items():
+units=[('GiB',1024**3),('MiB',1024**2),('KiB',1024),('GB',1000**3),('MB',1000**2),('KB',1000),('B',1)]
+for k,v in units:
   if s.endswith(k): print(int(float(s[:-len(k)])*v)); break
 else: print(0)
 " 2>/dev/null || echo 0)
@@ -67,8 +70,8 @@ else: print(0)
       fi
       sleep 1
     done
-  ) &
-  echo $!
+  ) </dev/null >/dev/null 2>&1 &
+  STATS_PID=$!
 }
 
 # --- Run one variant ---
@@ -112,7 +115,8 @@ run_variant() {
   done
   [[ -z "${ready_ts:-}" ]] && { log "ERROR: $variant unhealthy"; docker logs "$cname" --tail 80; return 5; }
 
-  local stats_pid; stats_pid=$(start_stats_sampler "$cname" "$RESULTS_DIR/${variant}-stats.csv")
+  start_stats_sampler "$cname" "$RESULTS_DIR/${variant}-stats.csv"
+  local stats_pid="$STATS_PID"
 
   log "k6 ($DURATION, $VUS_TOTAL VUs)..."
   DURATION="$DURATION" VUS_TOTAL="$VUS_TOTAL" \
@@ -144,14 +148,15 @@ cold_start_under_load() {
 
   local probe_log="$RESULTS_DIR/${variant}-cold-probe.log"
   : > "$probe_log"
-  ( while true; do
+  ( set +e
+    while true; do
       ts=$(date +%s.%3N)
       code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 \
         "http://localhost:${APP_PORT}/actuator/health" 2>/dev/null)
       [[ -z "$code" ]] && code="000"
       echo "$ts $code" >> "$probe_log"
       sleep 0.1
-    done ) &
+    done ) </dev/null >/dev/null 2>&1 &
   local probe_pid=$!
   sleep 2
 
