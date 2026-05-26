@@ -11,7 +11,7 @@ first 60 s so the JIT has time to warm up.
 
 🏁 **Cold start (no load):** JVM 20.0s → Native 1.2s — **~17× faster**
 🚦 **Cold start under live traffic:** JVM 19.4s → Native 255 ms — **~76× faster**
-💾 **Memory under load:** JVM ~400 MiB → Native ~110 MiB — **~4× less RAM**
+💾 **Memory under load:** JVM 422 MiB → Native 165 MiB — **~2.5× less RAM**
 📈 **Peak RPS at saturation:** JVM 374 → Native 391 — **+5%** on the same 2 vCPU
 📉 **p99 at saturation:** JVM 4.0s → Native 3.0s — **-25%**
 📦 **Container image:** 171 MB → 90 MB

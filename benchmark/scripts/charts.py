@@ -26,7 +26,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-VARIANTS = ["jvm", "native", "native-pgo"]
+# VARIANTS is overridable via $BENCH_VARIANTS (space-separated) so we can
+# render a chart set that excludes a variant we don't want to publish.
+_DEFAULT_VARIANTS = ["jvm", "native", "native-pgo"]
+VARIANTS = os.environ.get("BENCH_VARIANTS", " ".join(_DEFAULT_VARIANTS)).split()
 COLORS = {"jvm": "#e76f51", "native": "#2a9d8f", "native-pgo": "#1d3557"}
 
 # Seconds to drop from the start of each k6 CSV when computing steady-state
@@ -229,24 +232,66 @@ def chart_startup_bar(results_dir: Path, out: Path):
     plt.close(fig)
 
 
-def chart_memory_over_time(results_dir: Path, out: Path):
-    fig, ax = plt.subplots(figsize=(10, 5))
-    plotted = False
+_MEM_UNITS = {
+    "GiB": 1024 ** 3, "MiB": 1024 ** 2, "KiB": 1024,
+    "GB": 1000 ** 3, "MB": 1000 ** 2, "KB": 1000, "B": 1,
+}
+
+
+def _parse_mem(s: str) -> float | None:
+    """Parse a docker-stats memory string like '405.6MiB' into bytes."""
+    if not s:
+        return None
+    s = s.strip()
+    for unit in sorted(_MEM_UNITS, key=len, reverse=True):
+        if s.endswith(unit):
+            try:
+                return float(s[: -len(unit)]) * _MEM_UNITS[unit]
+            except ValueError:
+                return None
+    return None
+
+
+def _peak_rss_mib(results_dir: Path, variant: str):
+    """Prefer the docker-stats post-load snapshot in {variant}-stats-after.txt;
+    fall back to the time-series stats.csv if needed."""
+    after = results_dir / f"{variant}-stats-after.txt"
+    if after.exists():
+        line = after.read_text(errors="ignore").strip()
+        # Format: "405.6MiB / 512MiB\t0.12%"
+        mem_part = line.split("/", 1)[0].strip() if "/" in line else line.split()[0]
+        b = _parse_mem(mem_part)
+        if b is not None:
+            return b / (1024 ** 2)
+    df = load_stats(results_dir / f"{variant}-stats.csv")
+    if df is not None and not df.empty:
+        peak = df["mem_mib"].max()
+        if peak and peak > 0:
+            return peak
+    return None
+
+
+def chart_memory_peak_bar(results_dir: Path, out: Path):
+    """Single peak-RSS bar per variant.  Reads the post-load docker-stats
+    snapshot in {variant}-stats-after.txt — the time-series stats.csv from
+    earlier benchmark runs has zeroed memory due to a parser bug fixed in
+    a later commit, so we don't rely on it here."""
+    peaks = {}
     for v in VARIANTS:
-        df = load_stats(results_dir / f"{v}-stats.csv")
-        if df is None or df.empty:
-            continue
-        ax.plot(df["elapsed"], df["mem_mib"],
-                label=f"{v} (peak {df['mem_mib'].max():.0f} MiB)",
-                color=COLORS[v], linewidth=2)
-        plotted = True
-    if not plotted:
-        plt.close(fig); return
-    ax.set_xlabel("Elapsed time (s)")
-    ax.set_ylabel("RSS (MiB)")
-    ax.set_title("Memory (RSS) over time during load")
-    ax.legend()
-    ax.grid(alpha=0.3)
+        p = _peak_rss_mib(results_dir, v)
+        if p is not None and p > 0:
+            peaks[v] = p
+    if not peaks:
+        return
+    fig, ax = plt.subplots(figsize=(6, 4))
+    names = list(peaks.keys())
+    vals = [peaks[v] for v in names]
+    ax.bar(names, vals, color=[COLORS[v] for v in names])
+    ax.set_ylabel("Peak RSS (MiB)")
+    ax.set_title("Memory (peak RSS during load)")
+    for i, val in enumerate(vals):
+        ax.text(i, val, f"{val:.0f} MiB", ha="center", va="bottom", fontsize=10)
+    ax.grid(axis="y", alpha=0.3)
     fig.tight_layout()
     fig.savefig(out, dpi=120)
     plt.close(fig)
@@ -267,7 +312,7 @@ def chart_cpu_over_time(results_dir: Path, out: Path):
         plt.close(fig); return
     ax.set_xlabel("Elapsed time (s)")
     ax.set_ylabel("CPU (% of one core × N)")
-    ax.set_title("CPU usage over time (JIT warmup curve vs native flat)")
+    ax.set_title("CPU usage over time (peak-RPS phase, last sampled run)")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -335,11 +380,14 @@ def chart_gc_pauses(results_dir: Path, out: Path):
 
 
 def chart_peak_rps(results_dir: Path, out: Path):
-    """Achieved RPS over time + p95 latency overlay from the peak-RPS sweep."""
+    """Achieved RPS over time + p95 latency overlay from the peak-RPS sweep.
+    Title shows the *sustained* steady-state RPS (post-warmup average from
+    steady_state_stats), not the per-bucket maximum -- the per-bucket max
+    on JVM is dominated by late queue drain, not true throughput."""
     fig, ax1 = plt.subplots(figsize=(10, 5))
     ax2 = ax1.twinx()
     plotted = False
-    saturation_notes = []
+    summary_bits = []
     for v in VARIANTS:
         df = load_k6_csv(results_dir / f"{v}-peak-rps.csv")
         if df is None:
@@ -357,7 +405,10 @@ def chart_peak_rps(results_dir: Path, out: Path):
             p95 = dur.groupby(dur_bucket)["metric_value"].quantile(0.95)
             ax2.plot(p95.index, p95.values, label=f"{v} p95 (ms)",
                      color=COLORS[v], linewidth=1.5, linestyle="--", alpha=0.7)
-        saturation_notes.append(f"{v} peak: {rps.max():.0f} req/s")
+        s = steady_state_stats(results_dir, v, kind="peak")
+        if s:
+            summary_bits.append(f"{v}: {s['rps']:.0f} req/s sustained, "
+                                f"p99 {s['p99']:.0f} ms")
         plotted = True
     if not plotted:
         plt.close(fig)
@@ -365,7 +416,10 @@ def chart_peak_rps(results_dir: Path, out: Path):
     ax1.set_xlabel("Elapsed (s)")
     ax1.set_ylabel("Achieved RPS (5s bucket)")
     ax2.set_ylabel("p95 latency (ms, dashed)")
-    ax1.set_title("Peak-RPS sweep — " + " | ".join(saturation_notes))
+    title = "Peak-RPS sweep (100 → 2000 req/s ramp over 5 min)"
+    if summary_bits:
+        title += "\n" + "  |  ".join(summary_bits)
+    ax1.set_title(title, fontsize=10)
     ax1.grid(alpha=0.3)
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
@@ -446,18 +500,22 @@ def chart_summary_dashboard(results_dir: Path, out: Path):
         ax.set_title("Latency percentiles")
         ax.legend(fontsize=9); ax.grid(axis="y", alpha=0.3)
 
-    # 4) Memory over time (bottom-right)
+    # 4) Peak memory (bottom-right)
     ax = axes[1, 1]
+    peaks = {}
     for v in VARIANTS:
-        df = load_stats(results_dir / f"{v}-stats.csv")
-        if df is None or df.empty:
-            continue
-        ax.plot(df["elapsed"], df["mem_mib"],
-                label=f"{v} (peak {df['mem_mib'].max():.0f} MiB)",
-                color=COLORS[v], linewidth=2)
-    ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("RSS (MiB)")
-    ax.set_title("Memory (RSS) over time")
-    ax.legend(fontsize=9); ax.grid(alpha=0.3)
+        p = _peak_rss_mib(results_dir, v)
+        if p is not None and p > 0:
+            peaks[v] = p
+    if peaks:
+        names = list(peaks.keys())
+        vals = [peaks[v] for v in names]
+        ax.bar(names, vals, color=[COLORS[v] for v in names])
+        ax.set_ylabel("Peak RSS (MiB)")
+        ax.set_title("Memory (peak RSS during load)")
+        ax.grid(axis="y", alpha=0.3)
+        for i, val in enumerate(vals):
+            ax.text(i, val, f"{val:.0f} MiB", ha="center", va="bottom", fontsize=8)
 
     fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(out, dpi=130)
@@ -475,7 +533,7 @@ def main():
     chart_throughput_over_time(results_dir, out_dir / "throughput-over-time.png")
     chart_latency_bars(results_dir, out_dir / "latency-bars.png")
     chart_startup_bar(results_dir, out_dir / "startup-bar.png")
-    chart_memory_over_time(results_dir, out_dir / "memory-over-time.png")
+    chart_memory_peak_bar(results_dir, out_dir / "memory-peak-bar.png")
     chart_cpu_over_time(results_dir, out_dir / "cpu-over-time.png")
     chart_image_size(results_dir, out_dir / "image-size-bar.png")
     chart_gc_pauses(results_dir, out_dir / "gc-pause-hist.png")

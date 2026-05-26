@@ -3,10 +3,13 @@
 > **TL;DR** — On a 2 vCPU / 4 GB AWS c7i.large with Postgres on a separate
 > RDS db.t3.micro and k6 on its own EC2:
 > - GraalVM native starts **~17× faster** (1.2 s vs 20 s).
-> - Native handles **+7 % more peak RPS** under saturation, with a **~25 %
->   tighter p99**.
-> - The JVM, _once warm_, has a lower **p50** (10 ms vs 20 ms native) and
->   serves ~5 % more sustained RPS at a moderate VU level.
+> - Cold start while traffic is hitting the port: native is **~76×
+>   faster** (255 ms vs 19.4 s).
+> - Native handles **+5 % more peak RPS** under saturation, with a
+>   **~24 % tighter p99**.
+> - The JVM, _once warm_, has a lower **p50** (10 ms vs 20 ms native)
+>   and serves ~5 % more sustained RPS at moderate load.
+> - Native peak RSS is **~2.5× lower** (165 MiB vs 422 MiB).
 > - GraalVM PGO did **not** win on AWS — because we trained the profile on
 >   the dev box against a localhost Postgres, so the PGO build optimized
 >   for the wrong hot path. Lesson: PGO is only as good as the workload
@@ -67,59 +70,62 @@ ran out mid-test. `c7i.large` holds full CPU the whole time.
 > the JVM's JIT has finished its warm-up curve — otherwise the JVM numbers
 > are unfairly low._
 
+![Summary dashboard](results/aws-v2/charts/summary-dashboard.png)
+
 ### Sustained mixed workload (50 VUs, 10 min)
 
-| Variant     | RPS     | p50    | p95    | p99    | Errors |
-|-------------|---------|--------|--------|--------|--------|
-| JVM         | **414** | **10** | 89     | 171    | 0      |
-| Native      | 393     | 20     | **69** | **147**| 0      |
-| Native PGO  | 354     | 32     | 102    | 181    | 0      |
+| Variant | RPS     | p50    | p95    | p99     | Errors |
+|---------|---------|--------|--------|---------|--------|
+| JVM     | **414** | **10** | 89     | 171     | 0      |
+| Native  | 393     | 20     | **69** | **147** | 0      |
 
-The hot-path p50 belongs to the JIT: it has runtime profile data the
-AOT compiler doesn't get, and PetClinic's most-frequent path is small
-enough that it fits well in C2's optimized form. The tail (p95/p99) goes
-to native, because there are no GC pauses.
+![Throughput over time](results/aws-v2/charts/throughput-over-time.png)
+
+The JIT warm-up is visible in the orange line: JVM throughput ramps from
+~100 req/s at boot to ~450 req/s after about 3 minutes. Native serves
+~400 req/s from the first second. After warm-up, JVM serves slightly
+more sustained throughput (414 vs 393, +5 %) on moderate load.
+
+The hot-path p50 also belongs to the JIT (10 ms vs 20 ms native): C2 has
+runtime profile data the AOT compiler doesn't get, and PetClinic's
+most-frequent path is small enough that it fits well in C2's optimized
+form. The tail (p95/p99) goes to native, because there are no GC pauses.
 
 ### Peak-RPS saturation sweep (100 → 2000 req/s over 5 min)
 
-| Variant     | Achieved RPS | p50  | p95    | p99    | Errors |
-|-------------|--------------|------|--------|--------|--------|
-| JVM         | 374          | 1109 | 2822   | 3995   | 0      |
-| Native      | **391**      | 1212 | **2356** | **3049** | 0    |
-| Native PGO  | 295          | 1634 | 3043   | 3769   | 0      |
+| Variant | Achieved RPS | p50  | p95      | p99      | Errors |
+|---------|--------------|------|----------|----------|--------|
+| JVM     | 374          | 1109 | 2822     | 3995     | 0      |
+| Native  | **391**      | 1212 | **2356** | **3049** | 0      |
+
+![Peak-RPS sweep](results/aws-v2/charts/peak-rps.png)
 
 When the CPU is the bottleneck, native gets more work per cycle because
 it isn't spending CPU on JIT compilation + GC. p99 latency at saturation
-drops by ~25 % on native. Neither variant returned 5xx — k6 just queued
+drops by ~24 % on native. Neither variant returned 5xx — k6 just queued
 requests as latency grew.
 
 ### Startup
 
-| Scenario                     | JVM     | Native   | Native PGO |
-|------------------------------|---------|----------|------------|
-| Cold start (no load)         | 20.0 s  | 1.16 s   | 1.18 s     |
-| Cold start under live traffic | 19.4 s | **255 ms** | 250 ms   |
+| Scenario                      | JVM    | Native     |
+|-------------------------------|--------|------------|
+| Cold start (no load)          | 20.0 s | 1.16 s     |
+| Cold start under live traffic | 19.4 s | **255 ms** |
+
+![Startup time](results/aws-v2/charts/startup-bar.png)
 
 If you're paying for over-provisioned warm pools to hide JVM startup —
 native lets you drop those. Cold-start-under-load is the honest number:
 a container starts while users are already hitting the new endpoint, and
 we measure ms until it answers 200.
 
-### Image size
+### Memory and image size
 
-| Variant     | Image  |
-|-------------|--------|
-| JVM         | 171 MB |
-| Native      | 90 MB  |
-| Native PGO  | 90 MB  |
-
-### Memory
-
-JVM RSS settles around ~400 MiB. Native around ~110 MiB. On 4 GB instances
-the absolute number is small, but on bin-packed nodes (k8s, Fargate) it
-means 4× the replicas per host.
-
-![Summary dashboard](results/aws-v2/charts/summary-dashboard.png)
+JVM peak RSS lands at **422 MiB** under load, native at **165 MiB** —
+**~2.5× less memory**. JVM container image is 171 MB, native is 91 MB
+— **half the size**. On 4 GB instances the absolute memory number is
+small, but on bin-packed nodes (k8s, Fargate) it means more replicas
+per host.
 
 ## The PGO surprise
 
