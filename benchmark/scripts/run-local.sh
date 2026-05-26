@@ -22,7 +22,8 @@ PROJECT_ROOT="$(cd "$BENCHMARK_DIR/.." && pwd)"
 RESULTS_DIR="$BENCHMARK_DIR/results/${RESULTS_SUBDIR:-local}"
 
 PROFILE="${1:-smoke}"
-VARIANT="${2:-both}"
+VARIANT="${2:-both}"  # accepted: "both" (=jvm+native), "all" (=jvm+native+native-pgo),
+                      # or any space-separated subset like "native native-pgo".
 
 APP_MEMORY="512m"
 APP_CPUS="1"
@@ -236,13 +237,20 @@ main() {
   build_images
   start_postgres
 
-  if [[ "$VARIANT" == "both" || "$VARIANT" == "jvm" ]]; then
-    run_variant jvm
-  fi
-  if [[ "$VARIANT" == "both" || "$VARIANT" == "native" ]]; then
-    if [[ "$VARIANT" == "both" ]]; then sleep 10; fi  # let host settle
-    run_variant native
-  fi
+  # Expand the convenience aliases.
+  local variants_to_run
+  case "$VARIANT" in
+    both) variants_to_run="jvm native";;
+    all)  variants_to_run="jvm native native-pgo";;
+    *)    variants_to_run="$VARIANT";;
+  esac
+
+  local first=1
+  for v in $variants_to_run; do
+    if [[ $first -eq 0 ]]; then sleep 10; fi
+    run_variant "$v"
+    first=0
+  done
 
   if [[ "${SKIP_COLD_START:-0}" != "1" ]]; then
     log "Cold-start-under-load phase..."

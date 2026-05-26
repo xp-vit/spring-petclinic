@@ -21,3 +21,22 @@ variable "name_prefix" {
   type        = string
   default     = "petclinic-bench"
 }
+
+variable "rds_instance_class" {
+  description = "RDS instance class (v2 architecture)"
+  type        = string
+  default     = "db.t3.micro"
+}
+
+variable "rds_password" {
+  description = "RDS master password"
+  type        = string
+  default     = "petclinic"
+  sensitive   = true
+}
+
+variable "k6_instance_type" {
+  description = "EC2 type for the k6 load generator (v2 architecture)"
+  type        = string
+  default     = "c5.large"
+}

@@ -26,8 +26,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-VARIANTS = ["jvm", "native"]
-COLORS = {"jvm": "#e76f51", "native": "#2a9d8f"}
+VARIANTS = ["jvm", "native", "native-pgo"]
+COLORS = {"jvm": "#e76f51", "native": "#2a9d8f", "native-pgo": "#1d3557"}
 
 # Seconds to drop from the start of each k6 CSV when computing steady-state
 # numbers (lets JIT warm up; native is unaffected).  Override with env
@@ -176,52 +176,46 @@ def chart_latency_bars(results_dir: Path, out: Path):
             data[v] = [d.get(k, 0) for k in metric_keys]
     if not data:
         return
-    fig, ax = plt.subplots(figsize=(8, 5))
-    x = range(len(labels))
-    width = 0.35
-    if "jvm" in data:
-        ax.bar([i - width/2 for i in x], data["jvm"], width, label="JVM",
-               color=COLORS["jvm"])
-    if "native" in data:
-        ax.bar([i + width/2 for i in x], data["native"], width, label="Native",
-               color=COLORS["native"])
-    ax.set_xticks(list(x))
+    fig, ax = plt.subplots(figsize=(9, 5))
+    present = [v for v in VARIANTS if v in data]
+    n = len(present)
+    x = list(range(len(labels)))
+    width = 0.8 / max(n, 1)
+    for idx, v in enumerate(present):
+        offset = (idx - (n - 1) / 2.0) * width
+        positions = [i + offset for i in x]
+        bars = ax.bar(positions, data[v], width, label=v, color=COLORS[v])
+        for pos, val in zip(positions, data[v]):
+            ax.text(pos, val, f"{val:.1f}", ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x)
     ax.set_xticklabels(labels)
     ax.set_ylabel("Latency (ms)")
     ax.set_title("HTTP request latency percentiles")
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
-    for i, l in enumerate(labels):
-        if "jvm" in data:
-            ax.text(i - width/2, data["jvm"][i], f"{data['jvm'][i]:.1f}",
-                    ha="center", va="bottom", fontsize=9)
-        if "native" in data:
-            ax.text(i + width/2, data["native"][i], f"{data['native'][i]:.1f}",
-                    ha="center", va="bottom", fontsize=9)
     fig.tight_layout()
     fig.savefig(out, dpi=120)
     plt.close(fig)
 
 
 def chart_startup_bar(results_dir: Path, out: Path):
-    cold = {}
-    under_load = {}
-    for v in VARIANTS:
-        cold[v] = read_int(results_dir / f"{v}-startup-ms.txt")
-        under_load[v] = read_int(results_dir / f"{v}-cold-start-ms.txt")
-    if not any(cold.values()) and not any(under_load.values()):
+    cold = {v: read_int(results_dir / f"{v}-startup-ms.txt") for v in VARIANTS}
+    load = {v: read_int(results_dir / f"{v}-cold-start-ms.txt") for v in VARIANTS}
+    if not any(cold.values()) and not any(load.values()):
         return
-    fig, ax = plt.subplots(figsize=(8, 5))
-    x = [0, 1]
+    present = [v for v in VARIANTS if cold.get(v) or load.get(v)]
+    fig, ax = plt.subplots(figsize=(9, 5))
+    x = list(range(len(present)))
     width = 0.35
-    cold_vals = [cold.get("jvm") or 0, cold.get("native") or 0]
-    load_vals = [under_load.get("jvm") or 0, under_load.get("native") or 0]
+    cold_vals = [cold.get(v) or 0 for v in present]
+    load_vals = [load.get(v) or 0 for v in present]
     ax.bar([i - width/2 for i in x], cold_vals, width, label="Cold start (no load)",
-           color=["#e76f51", "#2a9d8f"])
+           color=[COLORS[v] for v in present])
     ax.bar([i + width/2 for i in x], load_vals, width,
-           label="Cold start under load", color=["#f4a261", "#264653"])
+           label="Cold start under load",
+           color=[COLORS[v] for v in present], alpha=0.55)
     ax.set_xticks(x)
-    ax.set_xticklabels(["JVM", "Native"])
+    ax.set_xticklabels(present)
     ax.set_ylabel("Time to first 200 (ms)")
     ax.set_title("Startup time")
     ax.legend()
@@ -391,13 +385,16 @@ def chart_summary_dashboard(results_dir: Path, out: Path):
     ax = axes[0, 0]
     cold = {v: read_int(results_dir / f"{v}-startup-ms.txt") for v in VARIANTS}
     load = {v: read_int(results_dir / f"{v}-cold-start-ms.txt") for v in VARIANTS}
-    x = [0, 1]
+    present_s = [v for v in VARIANTS if cold.get(v) or load.get(v)]
+    x = list(range(len(present_s)))
     width = 0.35
-    cold_vals = [cold.get("jvm") or 0, cold.get("native") or 0]
-    load_vals = [load.get("jvm") or 0, load.get("native") or 0]
-    ax.bar([i - width/2 for i in x], cold_vals, width, label="Cold (no load)", color=["#e76f51", "#2a9d8f"])
-    ax.bar([i + width/2 for i in x], load_vals, width, label="Cold under load", color=["#f4a261", "#264653"])
-    ax.set_xticks(x); ax.set_xticklabels(["JVM", "Native"])
+    cold_vals = [cold.get(v) or 0 for v in present_s]
+    load_vals = [load.get(v) or 0 for v in present_s]
+    ax.bar([i - width/2 for i in x], cold_vals, width, label="Cold (no load)",
+           color=[COLORS[v] for v in present_s])
+    ax.bar([i + width/2 for i in x], load_vals, width, label="Cold under load",
+           color=[COLORS[v] for v in present_s], alpha=0.55)
+    ax.set_xticks(x); ax.set_xticklabels(present_s)
     ax.set_ylabel("Time to first 200 (ms)")
     ax.set_title("Startup time")
     ax.legend(fontsize=9)
@@ -434,20 +431,20 @@ def chart_summary_dashboard(results_dir: Path, out: Path):
         if d:
             data[v] = [d.get(k, 0) for k in metric_keys]
     if data:
-        xs = range(len(labels)); width = 0.35
-        if "jvm" in data:
-            ax.bar([i - width/2 for i in xs], data["jvm"], width, label="JVM", color=COLORS["jvm"])
-        if "native" in data:
-            ax.bar([i + width/2 for i in xs], data["native"], width, label="Native", color=COLORS["native"])
-        ax.set_xticks(list(xs)); ax.set_xticklabels(labels)
+        present_l = [v for v in VARIANTS if v in data]
+        n = len(present_l)
+        xs = list(range(len(labels)))
+        width = 0.8 / max(n, 1)
+        for idx, v in enumerate(present_l):
+            offset = (idx - (n - 1) / 2.0) * width
+            positions = [i + offset for i in xs]
+            ax.bar(positions, data[v], width, label=v, color=COLORS[v])
+            for pos, val in zip(positions, data[v]):
+                ax.text(pos, val, f"{val:.1f}", ha="center", va="bottom", fontsize=7)
+        ax.set_xticks(xs); ax.set_xticklabels(labels)
         ax.set_ylabel("Latency (ms)")
         ax.set_title("Latency percentiles")
         ax.legend(fontsize=9); ax.grid(axis="y", alpha=0.3)
-        for i, _ in enumerate(labels):
-            if "jvm" in data:
-                ax.text(i - width/2, data["jvm"][i], f"{data['jvm'][i]:.1f}", ha="center", va="bottom", fontsize=8)
-            if "native" in data:
-                ax.text(i + width/2, data["native"][i], f"{data['native'][i]:.1f}", ha="center", va="bottom", fontsize=8)
 
     # 4) Memory over time (bottom-right)
     ax = axes[1, 1]

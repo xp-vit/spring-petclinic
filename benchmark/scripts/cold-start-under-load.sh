@@ -104,12 +104,17 @@ run_variant() {
 
 mkdir -p "$RESULTS_DIR"
 
-if [[ "$VARIANT" == "both" || "$VARIANT" == "jvm" ]]; then
-  run_variant jvm
-fi
-if [[ "$VARIANT" == "both" || "$VARIANT" == "native" ]]; then
-  sleep 3
-  run_variant native
-fi
+case "$VARIANT" in
+  both) variants="jvm native";;
+  all)  variants="jvm native native-pgo";;
+  *)    variants="$VARIANT";;
+esac
 
-log "Done. Cold-start results in $RESULTS_DIR/{jvm,native}-cold-start-ms.txt"
+first=1
+for v in $variants; do
+  [[ $first -eq 0 ]] && sleep 3
+  run_variant "$v"
+  first=0
+done
+
+log "Done. Cold-start results in $RESULTS_DIR/*-cold-start-ms.txt"
