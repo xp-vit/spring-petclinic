@@ -125,17 +125,17 @@ run_variant() {
 
   # Phase A: mixed workload (10 min sustained)
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
-    "sudo -n /tmp/app-on-ec2.sh start $variant $ecr_url $rds_host $AWS_REGION $s3_bucket"
+    "sudo -n /tmp/app-on-ec2.sh start $variant $ecr_url $rds_host $AWS_REGION $s3_bucket mixed"
   ssh $SSH_OPTS "ubuntu@${k6_ip}" \
     "/tmp/k6-on-ec2.sh mixed $variant $app_private_ip $AWS_REGION $s3_bucket"
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
-    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket"
+    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket mixed"
 
   sleep 10
 
   # Phase B: peak-RPS (5 min ramp, fresh container)
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
-    "sudo -n /tmp/app-on-ec2.sh start $variant $ecr_url $rds_host $AWS_REGION $s3_bucket"
+    "sudo -n /tmp/app-on-ec2.sh start $variant $ecr_url $rds_host $AWS_REGION $s3_bucket peak"
   # JIT warm-up burst for JVM
   if [[ "$variant" == "jvm" ]]; then
     ssh $SSH_OPTS "ubuntu@${k6_ip}" \
@@ -144,7 +144,7 @@ run_variant() {
   ssh $SSH_OPTS "ubuntu@${k6_ip}" \
     "/tmp/k6-on-ec2.sh peak $variant $app_private_ip $AWS_REGION $s3_bucket"
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
-    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket"
+    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket peak"
 
   # Phase C: cold-start under load (app-side only, loopback probe)
   ssh $SSH_OPTS "ubuntu@${app_ip}" \

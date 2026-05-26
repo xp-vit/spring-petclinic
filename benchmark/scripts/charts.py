@@ -151,6 +151,13 @@ def chart_throughput_over_time(results_dir: Path, out: Path):
             continue
         bucket = (reqs["t"] // 5).astype(int) * 5
         rps = reqs.groupby(bucket).size() / 5.0
+        # Drop the last partial bucket -- k6's gracefulStop trims VUs in the
+        # final ~second, leaving the last 5-s bucket with only a fraction of
+        # its requests and producing a spurious vertical drop to ~0 on the
+        # chart.  We strip it as a cosmetic fix; the mean is computed on the
+        # trimmed series too.
+        if len(rps) > 1:
+            rps = rps.iloc[:-1]
         ax.plot(rps.index, rps.values, label=f"{v} ({rps.mean():.0f} req/s avg)",
                 color=COLORS[v], linewidth=2)
         plotted = True
@@ -253,21 +260,32 @@ def _parse_mem(s: str) -> float | None:
 
 
 def _peak_rss_mib(results_dir: Path, variant: str):
-    """Prefer the docker-stats post-load snapshot in {variant}-stats-after.txt;
-    fall back to the time-series stats.csv if needed."""
-    after = results_dir / f"{variant}-stats-after.txt"
-    if after.exists():
+    """Prefer the docker-stats post-load snapshot in *-stats-after-mixed.txt
+    (the steady-state phase), then *-stats-after.txt (legacy), then fall
+    back to the time-series stats.csv if available."""
+    candidates = [
+        results_dir / f"{variant}-stats-after-mixed.txt",
+        results_dir / f"{variant}-stats-after.txt",
+        results_dir / f"{variant}-stats-after-peak.txt",
+    ]
+    for after in candidates:
+        if not after.exists():
+            continue
         line = after.read_text(errors="ignore").strip()
         # Format: "405.6MiB / 512MiB\t0.12%"
         mem_part = line.split("/", 1)[0].strip() if "/" in line else line.split()[0]
         b = _parse_mem(mem_part)
         if b is not None:
             return b / (1024 ** 2)
-    df = load_stats(results_dir / f"{variant}-stats.csv")
-    if df is not None and not df.empty:
-        peak = df["mem_mib"].max()
-        if peak and peak > 0:
-            return peak
+    for stats_csv in (
+        results_dir / f"{variant}-stats-mixed.csv",
+        results_dir / f"{variant}-stats.csv",
+    ):
+        df = load_stats(stats_csv)
+        if df is not None and not df.empty:
+            peak = df["mem_mib"].max()
+            if peak and peak > 0:
+                return peak
     return None
 
 
@@ -297,13 +315,26 @@ def chart_memory_peak_bar(results_dir: Path, out: Path):
     plt.close(fig)
 
 
+def _load_stats_for_phase(results_dir: Path, variant: str, phase: str):
+    """Prefer the phase-specific CSV (variant-stats-{phase}.csv), fall back
+    to the legacy single-CSV file."""
+    p = results_dir / f"{variant}-stats-{phase}.csv"
+    if p.exists():
+        return load_stats(p), phase
+    return load_stats(results_dir / f"{variant}-stats.csv"), "legacy"
+
+
 def chart_cpu_over_time(results_dir: Path, out: Path):
+    """CPU over time, preferring the mixed-workload phase (sustained
+    steady-state) if available, falling back to whatever stats.csv holds."""
     fig, ax = plt.subplots(figsize=(10, 5))
     plotted = False
+    phases_seen = set()
     for v in VARIANTS:
-        df = load_stats(results_dir / f"{v}-stats.csv")
+        df, phase = _load_stats_for_phase(results_dir, v, "mixed")
         if df is None or df.empty:
             continue
+        phases_seen.add(phase)
         ax.plot(df["elapsed"], df["cpu_pct"],
                 label=f"{v} (mean {df['cpu_pct'].mean():.0f}%)",
                 color=COLORS[v], linewidth=2, alpha=0.85)
@@ -312,7 +343,8 @@ def chart_cpu_over_time(results_dir: Path, out: Path):
         plt.close(fig); return
     ax.set_xlabel("Elapsed time (s)")
     ax.set_ylabel("CPU (% of one core × N)")
-    ax.set_title("CPU usage over time (peak-RPS phase, last sampled run)")
+    phase_note = "mixed-workload phase" if phases_seen == {"mixed"} else "last sampled phase"
+    ax.set_title(f"CPU usage over time ({phase_note})")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.tight_layout()
@@ -398,11 +430,15 @@ def chart_peak_rps(results_dir: Path, out: Path):
             continue
         bucket = (reqs["t"] // 5).astype(int) * 5
         rps = reqs.groupby(bucket).size() / 5.0
+        if len(rps) > 1:
+            rps = rps.iloc[:-1]  # trim partial final bucket
         ax1.plot(rps.index, rps.values, label=f"{v} RPS",
                  color=COLORS[v], linewidth=2)
         if not dur.empty:
             dur_bucket = (dur["t"] // 5).astype(int) * 5
             p95 = dur.groupby(dur_bucket)["metric_value"].quantile(0.95)
+            if len(p95) > 1:
+                p95 = p95.iloc[:-1]
             ax2.plot(p95.index, p95.values, label=f"{v} p95 (ms)",
                      color=COLORS[v], linewidth=1.5, linestyle="--", alpha=0.7)
         s = steady_state_stats(results_dir, v, kind="peak")
@@ -469,6 +505,8 @@ def chart_summary_dashboard(results_dir: Path, out: Path):
             continue
         bucket = (reqs["t"] // 5).astype(int) * 5
         rps = reqs.groupby(bucket).size() / 5.0
+        if len(rps) > 1:
+            rps = rps.iloc[:-1]  # trim partial final bucket
         ax.plot(rps.index, rps.values, label=f"{v} ({rps.mean():.0f}/s)", color=COLORS[v], linewidth=2)
     ax.set_xlabel("Elapsed (s)"); ax.set_ylabel("Throughput (req/s)")
     ax.set_title("Throughput over time")

@@ -3,8 +3,12 @@
 # in the background, writes startup-ms + image-size + (for JVM) GC log.  k6
 # is driven from a separate EC2 -- this script only manages the SUT.
 #
-# Args: ACTION VARIANT ECR_URL RDS_HOST AWS_REGION S3_BUCKET
+# Args: ACTION VARIANT ECR_URL RDS_HOST AWS_REGION S3_BUCKET [PHASE]
 #   ACTION = start | stop | upload | cold_start
+#   PHASE  = optional tag (e.g. "mixed", "peak").  When provided, the stats
+#            CSV is named {variant}-stats-{phase}.csv so subsequent phases
+#            don't overwrite each other.  Default keeps the legacy
+#            {variant}-stats.csv name for backward compatibility.
 #
 # 'start':  pulls image, starts container, waits healthy, starts sampler.
 # 'stop':   stops sampler + container.
@@ -19,12 +23,20 @@ ECR_URL="${3:?ECR_URL required}"
 RDS_HOST="${4:?RDS_HOST required}"
 AWS_REGION="${5:?AWS_REGION required}"
 S3_BUCKET="${6:?S3_BUCKET required}"
+PHASE="${7:-}"
 
 RESULTS_DIR="/tmp/benchmark-results"
 APP_MEMORY="${APP_MEMORY:-512m}"
 APP_CPUS="${APP_CPUS:-1}"
 APP_PORT=8080
 CNAME="petclinic-${VARIANT}"
+if [[ -n "$PHASE" ]]; then
+  STATS_CSV="$RESULTS_DIR/${VARIANT}-stats-${PHASE}.csv"
+  STATS_AFTER="$RESULTS_DIR/${VARIANT}-stats-after-${PHASE}.txt"
+else
+  STATS_CSV="$RESULTS_DIR/${VARIANT}-stats.csv"
+  STATS_AFTER="$RESULTS_DIR/${VARIANT}-stats-after.txt"
+fi
 STATS_PIDFILE="/tmp/stats-pid-${VARIANT}"
 
 mkdir -p "$RESULTS_DIR"
@@ -39,7 +51,7 @@ ecr_login() {
 }
 
 start_stats() {
-  local out="$RESULTS_DIR/${VARIANT}-stats.csv"
+  local out="$STATS_CSV"
   echo "ts,cpu_pct,mem_bytes" > "$out"
   (
     set +e
@@ -116,7 +128,7 @@ case "$ACTION" in
   stop)
     stop_stats
     docker stats "$CNAME" --no-stream --format '{{.MemUsage}}\t{{.CPUPerc}}' \
-      > "$RESULTS_DIR/${VARIANT}-stats-after.txt" 2>/dev/null || true
+      > "$STATS_AFTER" 2>/dev/null || true
     docker stop "$CNAME" >/dev/null 2>&1 || true
     docker rm "$CNAME" >/dev/null 2>&1 || true
     ;;
