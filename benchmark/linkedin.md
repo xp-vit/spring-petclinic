@@ -1,39 +1,50 @@
-# LinkedIn post — JVM vs GraalVM Native on a real Spring Boot app
+# LinkedIn post — JVM vs GraalVM Native vs Native+PGO
 
-I got tired of GraalVM Native vs JVM benchmarks that don't actually load a
-database or template engine. So I ran the real thing: Spring Boot PetClinic
-on Postgres, on AWS c7i.large, k6 mixed workload, 10 minutes.
+I ran the same Spring Boot PetClinic on AWS in three configurations and
+the numbers told a more nuanced story than the usual "native is faster"
+headlines.
 
-Same code, same hardware, Java 25 LTS both sides.
+Setup: c7i.large for the app, separate c5.large for k6, RDS db.t3.micro
+for Postgres. Same Java 25 LTS for all three. 10-minute mixed workload
+(50 VUs), then a 5-min ramp to find peak RPS. All numbers below drop the
+first 60 s so the JIT has time to warm up.
 
-🏁 **Cold start (no load):** JVM 17.7s → Native 1.2s — **14× faster**
-🚦 **Cold start while traffic is hitting the port:** JVM 17.3s → Native 0.25s — **68× faster**
+🏁 **Cold start (no load):** JVM 20.0s → Native 1.2s — **~17× faster**
+🚦 **Cold start under live traffic:** JVM 19.4s → Native 255 ms — **~76× faster**
 💾 **Memory under load:** JVM ~400 MiB → Native ~110 MiB — **~4× less RAM**
-📉 **p99 latency (sustained):** JVM 160 ms → Native 109 ms — **-32%** (GC pauses gone)
-📈 **Peak RPS at saturation:** JVM 393 → Native 422 — **+7%** on the same 2 vCPU
-📦 **Container image:** 171 MB → 90 MB — half
-🟰 **Sustained throughput (50 VUs, after JIT warmup):** JVM 420 / Native 410 req/s — JVM actually slightly higher post-warmup
+📈 **Peak RPS at saturation:** JVM 374 → Native 391 — **+5%** on the same 2 vCPU
+📉 **p99 at saturation:** JVM 4.0s → Native 3.0s — **-25%**
+📦 **Container image:** 171 MB → 90 MB
 
-Counter-intuitive: **JVM p50 was 7 ms vs native 13 ms** once warm. C2 has runtime profile info AOT doesn't get. Native wins the tail, not the median.
+But here is the part I didn't expect: **once the JIT is warm, the JVM has
+a lower p50 than native** (10 ms vs 20 ms) on sustained moderate load.
+C2 has runtime profile data the AOT compiler doesn't get. Native wins
+the tail (p95/p99), JIT wins the median.
 
-Surprises:
-1. JIT actually edges native on p50 once warm. The "native is always faster" claim is too simple.
-2. Native wins the tail (p99) and saturation peak RPS — that's the real story.
-3. One AOT gotcha cost me an hour: `RuntimeHints.resources().registerPattern("db/*")` only matches `db/foo`, not `db/postgres/schema.sql`. App passed health checks, every business endpoint returned 500. `db/*/*` fixed it.
+And the cherry on top — **GraalVM PGO lost on AWS**.
 
-When to switch:
-✅ Scale-from-zero / serverless / Fargate / Lambda — the 14× startup wins
-✅ Tight tail latency SLOs — the GC pauses disappear
+I trained the PGO profile on my dev box, where Postgres ran on
+localhost. On AWS the database is RDS, query latency goes from
+microseconds to 1-3 ms, and the hot paths shifted entirely. The PGO
+build had carefully optimized code that production never executes. p50
+went up 60 %, peak RPS dropped 25 %.
+
+PGO is only as good as the workload you train it on. A localhost profile
+optimizing for production is like a runner doing high-altitude training
+at sea level.
+
+When to switch to native:
+✅ Scale-from-zero / serverless / Fargate / Lambda — startup wins
+✅ Tight p99 SLOs and saturation-prone workloads
 ✅ Dense bin-packing — 4× less RSS per replica
+✅ Memory-constrained instances
 
-When to stay on JVM:
-🤷 Long-running workers w/ warm pool — JIT catches up anyway
+When to stay on the JVM:
+🤷 Long-running workers with warm pools — JIT catches up anyway
 🤷 Heavy reflection / dynamic loading you can't easily annotate
-🤷 You can't afford the 5-min native compile in your inner loop
+🤷 Workloads where median (not tail) matters
 
-Full write-up + reproducible scripts (Terraform + Docker + k6 + matplotlib):
+Full write-up + reproducible Terraform + k6 + matplotlib scripts:
 <https://github.com/xp-vit/spring-petclinic/tree/main/benchmark>
 
-What are _you_ seeing on your real workloads?
-
-#java #springboot #graalvm #aws #performance
+#java #springboot #graalvm #aws #performance #pgo

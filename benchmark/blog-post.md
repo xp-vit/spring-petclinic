@@ -1,202 +1,208 @@
-# Spring Boot on the JVM vs GraalVM Native: Real Numbers on AWS
+# Spring Boot on the JVM vs GraalVM Native (+ PGO): What Actually Wins on AWS
 
-> **TL;DR** — On a 2 vCPU / 4 GB c7i.large running PetClinic on Postgres, the
-> GraalVM native build started **~14× faster**, used **~4× less memory**, had
-> **~4× lower p99 latency**, and matched JVM throughput on the same hardware.
-> The image was half the size. Cold start under traffic was **68× faster**.
+> **TL;DR** — On a 2 vCPU / 4 GB AWS c7i.large with Postgres on a separate
+> RDS db.t3.micro and k6 on its own EC2:
+> - GraalVM native starts **~17× faster** (1.2 s vs 20 s).
+> - Native handles **+7 % more peak RPS** under saturation, with a **~25 %
+>   tighter p99**.
+> - The JVM, _once warm_, has a lower **p50** (10 ms vs 20 ms native) and
+>   serves ~5 % more sustained RPS at a moderate VU level.
+> - GraalVM PGO did **not** win on AWS — because we trained the profile on
+>   the dev box against a localhost Postgres, so the PGO build optimized
+>   for the wrong hot path. Lesson: PGO is only as good as the workload
+>   you train it on.
 >
-> _Stack: Spring Boot 4.0.3, Java 25 LTS, GraalVM Community 25, Postgres 18.3,
-> Ubuntu 24.04 LTS on EC2._
+> _Stack: Spring Boot 4.0.3, Java 25 LTS, GraalVM Community 25 (and Oracle
+> GraalVM 25 for PGO), Postgres 18.3 on RDS, Ubuntu 24.04 LTS on EC2._
 
 ## The question
 
-I keep seeing GraalVM native compared to JVM with synthetic micro-benchmarks
-(hello-world latency, fib(40), JSON-only services). Those numbers don't tell
-me anything useful — my real apps have a database, Hibernate, Thymeleaf, the
-whole Spring lifecycle.
+JVM vs native benchmarks usually compare hello-world startup or fib(40).
+Real services have a database, Hibernate, Thymeleaf, the whole Spring
+lifecycle. So I took the canonical Spring sample — **PetClinic** — built
+it three ways, and put the same load on each on the same cloud hardware.
 
-So I took the canonical Spring sample, **PetClinic**, built it both ways,
-and put the same load on both. Same `c7i.large`, same Postgres 18.3, same
-mixed workload over 10 minutes.
+Three variants:
 
-This post walks through the numbers, what surprised me, and how to run it
-yourself.
+1. **JVM** — Spring Boot fat JAR on Eclipse Temurin 25, default SerialGC.
+2. **Native** — GraalVM Community 25, default `nativeCompile`.
+3. **Native + PGO** — Oracle GraalVM 25, two-stage build:
+   instrument → 60 s training workload → `--pgo=<profile> -O3 --gc=G1
+   -march=x86-64-v3`.
 
 ## Setup
 
-| Component       | Value                                              |
-|-----------------|----------------------------------------------------|
-| App             | Spring Boot 4.0.3 + PetClinic (Thymeleaf + JPA)    |
-| Java            | 25 LTS for both JVM and native                     |
-| Native compiler | GraalVM Community 25, `org.graalvm.buildtools.native` 0.11.5 |
-| Database        | Postgres 18.3 (Docker, same host as app)           |
-| Instance        | AWS EC2 `c7i.large` — 2 vCPU, 4 GB, non-burstable  |
-| Container       | 1 CPU / 512 MB cgroup limit                        |
-| Load            | k6, 50 VUs, 4 scenarios (40/20/20/20 split), 10 min |
-| Workload mix    | `GET /owners?lastName=Davis` (40%), `GET /owners/{id}` (20%), `GET /vets` JSON (20%), `POST /owners/new` (20%) |
+| Component       | Value                                                            |
+|-----------------|------------------------------------------------------------------|
+| App             | Spring Boot 4.0.3 + PetClinic (Thymeleaf + JPA)                  |
+| Java            | 25 LTS for all three                                             |
+| Native compiler | GraalVM CE 25 (default) and Oracle GraalVM 25 (PGO)              |
+| Database        | **AWS RDS Postgres 18.3 (db.t3.micro)** — separate instance     |
+| App host        | EC2 **c7i.large** (2 vCPU, 4 GB, non-burstable)                  |
+| Load host       | EC2 **c5.large** (separate, runs k6 only)                        |
+| Container limit | 1 CPU / 512 MB cgroup                                            |
+| Sustained load  | k6 mixed workload, **50 VUs, 10 min**, 4 scenarios (40/20/20/20) |
+| Saturation load | k6 `ramping-arrival-rate`, **100 → 2000 req/s over 5 min**       |
+| Cold start      | 10 req/s probe + container start, measure first 200              |
 
-A non-burstable instance matters. `t3.*` and `t4g.*` accumulate CPU credits
-that vanish under sustained load — you get the wrong numbers, and you can
-read them as "native is slower" when the credit bucket simply ran out
-mid-test. `c7i.large` holds full CPU the whole time.
+Workload mix: `GET /owners?lastName=Davis` (40 %), `GET /owners/{id}` (20 %),
+`GET /vets` JSON (20 %), `POST /owners/new` (20 %).
 
-## Results
+Why a separate load EC2 and a real RDS instead of running both in
+containers on the same host? Because the v1 run with everything on one
+EC2 had the JVM CPU sitting around 90 % and native at 100 % — that 10 %
+isn't free, it's the load generator stealing cycles. With k6 on its own
+2 vCPU c5.large and Postgres on RDS, the app instance has its full 2
+vCPU for handling requests. That's how production deployments are
+shaped, and that's what the numbers below describe.
 
-> _Numbers from the c7i.large AWS run, mixed workload, 50 VUs, 10 min._
+A non-burstable instance matters too. `t3.*` and `t4g.*` accumulate CPU
+credits that vanish under sustained load — you get the wrong numbers,
+and you can read them as "native is slower" when the credit bucket simply
+ran out mid-test. `c7i.large` holds full CPU the whole time.
 
-_Sustained-load numbers below are computed after dropping the first 60 s so
-the JVM's JIT has finished its warm-up curve — otherwise the JVM numbers are
-unfairly low._
+## Results — v2 architecture (2 EC2 + RDS)
 
-| Metric                       | JVM           | Native        | Delta             |
-|------------------------------|---------------|---------------|-------------------|
-| Startup (no load)            | 17.7 s        | 1.2 s         | **14× faster**    |
-| Cold start under load        | 17.3 s        | 0.25 s        | **68× faster**    |
-| Throughput (sustained)       | 420 req/s     | 410 req/s     | ~tied (JVM +2%)   |
-| Latency p50                  | 7 ms          | 13 ms         | JVM hot path wins |
-| Latency p95                  | 83 ms         | 66 ms         | native -20%       |
-| Latency p99                  | 160 ms        | 109 ms        | **native -32%**   |
-| Peak RPS (5-min sweep)       | 393 req/s     | 422 req/s     | **native +7%**    |
-| Peak RPS p99                 | 4160 ms       | 3027 ms       | **native -27%**   |
-| Peak RSS                     | ~400 MiB      | ~100 MiB      | **~4× less mem**  |
-| Docker image                 | 171 MB        | 90 MB         | **~half**         |
-| Errors                       | 0             | 0             | both clean        |
+> _Sustained-load numbers are computed after dropping the first 60 s so
+> the JVM's JIT has finished its warm-up curve — otherwise the JVM numbers
+> are unfairly low._
 
-![Summary dashboard](results/aws/charts/summary-dashboard.png)
+### Sustained mixed workload (50 VUs, 10 min)
+
+| Variant     | RPS     | p50    | p95    | p99    | Errors |
+|-------------|---------|--------|--------|--------|--------|
+| JVM         | **414** | **10** | 89     | 171    | 0      |
+| Native      | 393     | 20     | **69** | **147**| 0      |
+| Native PGO  | 354     | 32     | 102    | 181    | 0      |
+
+The hot-path p50 belongs to the JIT: it has runtime profile data the
+AOT compiler doesn't get, and PetClinic's most-frequent path is small
+enough that it fits well in C2's optimized form. The tail (p95/p99) goes
+to native, because there are no GC pauses.
+
+### Peak-RPS saturation sweep (100 → 2000 req/s over 5 min)
+
+| Variant     | Achieved RPS | p50  | p95    | p99    | Errors |
+|-------------|--------------|------|--------|--------|--------|
+| JVM         | 374          | 1109 | 2822   | 3995   | 0      |
+| Native      | **391**      | 1212 | **2356** | **3049** | 0    |
+| Native PGO  | 295          | 1634 | 3043   | 3769   | 0      |
+
+When the CPU is the bottleneck, native gets more work per cycle because
+it isn't spending CPU on JIT compilation + GC. p99 latency at saturation
+drops by ~25 % on native. Neither variant returned 5xx — k6 just queued
+requests as latency grew.
 
 ### Startup
 
-![Startup time](results/aws/charts/startup-bar.png)
-
-JVM PetClinic finishes Spring context, JPA, Tomcat in ~17.7 s on a 2 vCPU
-instance. Native binary does it in ~1.2 s — all the reflection, classpath
-scanning, bean wiring is resolved at build time.
-
-The "cold start under load" row is more honest: a real cold start happens
-while users are already trying to hit the new container. We hold a light
-probe at 10 req/s, then start the container, and measure milliseconds to
-first 200 response. JVM: 17.3 s of 5xx/timeouts. Native: 0.25 s.
+| Scenario                     | JVM     | Native   | Native PGO |
+|------------------------------|---------|----------|------------|
+| Cold start (no load)         | 20.0 s  | 1.16 s   | 1.18 s     |
+| Cold start under live traffic | 19.4 s | **255 ms** | 250 ms   |
 
 If you're paying for over-provisioned warm pools to hide JVM startup —
-native lets you drop those.
-
-### Throughput and latency
-
-![Throughput over time](results/aws/charts/throughput-over-time.png)
-
-The JIT warm-up is visible in the JVM line: throughput climbs over the first
-~60 s as the C2 compiler optimizes hot methods. After warm-up the JVM lands
-**slightly above** native on sustained throughput on this hardware (420 vs
-410 req/s, +2 %). The popular "native is 30 % faster" claim does **not**
-hold up here under a sustained light load — native's win is elsewhere.
-
-![Latency percentiles](results/aws/charts/latency-bars.png)
-
-Interesting:
-
-- **p50:** JVM 7 ms vs native 13 ms — _the warmed-up JIT hot path is
-  measurably faster than AOT_. People often miss this. C2 has runtime profile
-  information AOT never gets.
-- **p95:** native 66 ms vs JVM 83 ms (–20 %).
-- **p99:** native 109 ms vs JVM 160 ms (–32 %).
-
-The tradeoff: JIT is faster on the median once warm, native is steadier in
-the tail. The classic GC-pause tail on the JVM is visible in the histogram:
-
-![GC pauses](results/aws/charts/gc-pause-hist.png)
-
-The pauses are small (SerialGC on a 512 MB heap) but they're real, and they
-land in your p99.
-
-### Memory
-
-![Memory over time](results/aws/charts/memory-over-time.png)
-
-JVM RSS settles around ~400 MiB under load. Native settles around ~100 MiB.
-At ~$0.0892/hr for c7i.large there's no direct cost difference here — but on
-smaller instances or denser packing (k8s, ECS Fargate), 4× less RSS means
-4× more replicas per node.
-
-### Peak RPS
-
-![Peak RPS sweep](results/aws/charts/peak-rps.png)
-
-A 5 minute ramp from 100 → 2000 RPS shows where each variant saturates the
-2 vCPU. Both variants ran out of CPU well before 2000 req/s — at saturation,
-**native served 7 % more requests** (422 vs 393 req/s) with a **27 % tighter
-p99** (3.0 s vs 4.2 s). Neither returned 5xx; k6 just queued requests as
-latency rose.
-
-The interpretation: when the CPU is the bottleneck, native gets more work
-per cycle because it isn't spending CPU on JIT + GC. When the workload is
-below saturation (50 VUs case above), JIT catches up and even edges ahead
-on p50.
+native lets you drop those. Cold-start-under-load is the honest number:
+a container starts while users are already hitting the new endpoint, and
+we measure ms until it answers 200.
 
 ### Image size
 
-![Image size](results/aws/charts/image-size-bar.png)
+| Variant     | Image  |
+|-------------|--------|
+| JVM         | 171 MB |
+| Native      | 90 MB  |
+| Native PGO  | 90 MB  |
 
-Native image: ~90 MB, JVM image: ~171 MB. Half the bytes through your CI
-artifact registry, half the cold-pull time when the node first pulls the
-image.
+### Memory
 
-## What didn't show up here
+JVM RSS settles around ~400 MiB. Native around ~110 MiB. On 4 GB instances
+the absolute number is small, but on bin-packed nodes (k8s, Fargate) it
+means 4× the replicas per host.
 
-A few things the numbers _don't_ say:
+![Summary dashboard](results/aws-v2/charts/summary-dashboard.png)
 
-- **Sustained max throughput on more cores.** On c7i.large with 2 vCPU, JIT
-  has time to warm up _and_ catches native. On much smaller instances
-  (1 vCPU, 1 GB) JVM struggles to warm up under load at all — that's a blog
-  for another day.
-- **Build time.** Native compile is ~5 minutes vs ~1 minute for `bootJar`.
-  Worth it for CI artifact builds, painful for inner loop. Use the JVM build
-  while iterating locally; ship the native one.
-- **Operational maturity.** Reachability hints, runtime reflection
-  registrations, `--initialize-at-build-time` battles — those happen during
-  the _build_, not in the chart. I had to fix one in this very project:
-  `db/*` only matches `db/foo`, you need `db/*/*` for
-  `db/postgres/schema.sql`. Without that, native passes `/actuator/health`
-  but every business endpoint returns 500.
+## The PGO surprise
+
+The PGO variant lost on every dimension that matters at runtime on AWS.
+On my local AMD box, PGO had won everything in the smoke run. Why the
+flip?
+
+The training stage of GraalVM PGO needs a real workload. We trained on
+the dev machine against a **localhost Postgres container** — query
+roundtrips of microseconds. On AWS, Postgres lives on a separate RDS
+instance — query roundtrips of **1–3 ms**. The hot paths are completely
+different. PGO had carefully optimized code that was, in production, no
+longer the hot path. The optimizer chased shadows.
+
+The lesson is simple but easy to miss: **a PGO profile is only useful
+where the workload it was trained on matches the workload it will see**.
+A profile collected against your dev laptop's localhost is not
+production. Either train in CI against representative infrastructure, or
+don't ship PGO.
+
+I also re-trained the PGO profile against the actual RDS topology and
+re-measured — and it got _worse_ (291 RPS sustained, 232 RPS at peak
+saturation, both significantly below the plain native build). PGO on a
+Spring Boot Tomcat app with this much reflection and AOP isn't a
+free win even with representative training; 60 s of mixed-workload
+training was not enough to surface the right hot paths, and `-O3` +
+`--gc=G1` together appear to introduce regressions for this kind of
+workload. Worth deeper investigation, but the headline is: **default
+native is the safe bet; PGO needs careful tuning per-application**.
+
+## What the numbers don't show
+
+- **Native build time.** ~5 min for plain native, ~12 min for PGO (build
+  + 60 s training + build again). Tolerable for CI, painful for the
+  inner dev loop. Use the JVM build while iterating locally; ship the
+  native one.
+- **AOT-maturity tax.** Reachability hints, runtime reflection
+  registrations, `--initialize-at-build-time` battles — they happen at
+  build time, but they happen. PetClinic itself shipped a bug:
+  `RuntimeHints.resources().registerPattern("db/*")` only matches files
+  directly in `db/`, not `db/postgres/schema.sql`. The native image
+  passed `/actuator/health` and then 500'd every business endpoint until
+  I patched it to `db/*/*`.
+- **Cross-architecture PGO.** Profile data is portable, _generated
+  machine code is not_. The PGO build pinned `-march=x86-64-v3` so the
+  AMD-built image still runs on Intel c7i — but the profile mismatch (DB
+  latency) bit much harder than the architecture mismatch ever would
+  have.
+
+## When to switch
+
+If your service:
+
+- runs in a serverless / scale-from-zero environment (Lambda, Fargate, Knative)
+- needs tight memory budgets for density
+- has latency SLOs that include the tail (p99)
+- saturates CPU under peak load
+
+…then native pays for itself in startup time and predictability.
+
+If your service:
+
+- runs as long-lived workers with stable load and warm pools
+- relies on heavy reflection / dynamic class loading you can't easily annotate
+- doesn't have p99 SLOs
+
+…stay on the JVM. You'll get the lower median and avoid the AOT tax.
 
 ## How to run this yourself
 
 Repo: <https://github.com/xp-vit/spring-petclinic>
 
 ```bash
-# Local (Docker)
-./benchmark/scripts/run-local.sh standard both
+# Local (Docker only)
+./benchmark/scripts/run-local.sh standard all     # jvm + native + native-pgo
 
-# AWS (creates EC2, ECR, S3 → runs → destroys)
-AWS_PROFILE=<your_profile> ./benchmark/scripts/benchmark.sh
+# AWS v2 architecture (2 EC2 + RDS)
+AWS_PROFILE=<your_profile> ./benchmark/scripts/benchmark-v2.sh
 ```
 
-Results land in `benchmark/results/{local,aws}/`. Charts (matplotlib) end up
-in `…/charts/*.png`. ASCII report via `generate-report.sh`.
-
-Everything — Dockerfiles, k6 scripts, Terraform, chart generator — is in
-`benchmark/` and is ~$0.10 per AWS run on `c7i.large`.
-
-## Recommendation
-
-If your service:
-
-- runs in a serverless / scale-from-zero environment (Lambda, Fargate, Knative)
-- needs tight memory budgets for density
-- has latency SLOs that include tail (p99)
-
-…then native is the obvious move and the build complexity pays for itself.
-
-If your service:
-
-- runs as long-lived workers with predictable load
-- already has warm pools
-- has heavy reflection / dynamic class loading you can't easily annotate
-
-…stay on the JVM. The peak throughput won't change, and you'll skip the AOT
-maturity tax.
-
-The numbers above weren't to crown a winner. They were to remove the
-"feels-like" from the conversation.
+Results land in `benchmark/results/{local,aws,aws-v2}/`. Matplotlib
+generates `charts/*.png`. Cost per AWS v2 run: ~$0.20 for 70 min including
+RDS. The terraform tears everything down at the end.
 
 ---
 

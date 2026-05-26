@@ -128,7 +128,7 @@ case "$ACTION" in
   cold_start)
     ecr_login
     docker pull "${ECR_URL}:${VARIANT}" >/dev/null
-    local probe_log="$RESULTS_DIR/${VARIANT}-cold-probe.log"
+    probe_log="$RESULTS_DIR/${VARIANT}-cold-probe.log"
     : > "$probe_log"
     docker rm -f "${CNAME}-cold" >/dev/null 2>&1 || true
 
@@ -141,10 +141,10 @@ case "$ACTION" in
         echo "$ts $code" >> "$probe_log"
         sleep 0.1
       done ) </dev/null >/dev/null 2>&1 &
-    local probe_pid=$!
+    probe_pid=$!
     sleep 2
 
-    local start_ts; start_ts=$(date +%s.%3N)
+    start_ts=$(date +%s.%3N)
     docker run -d --name "${CNAME}-cold" --network host \
       --memory "$APP_MEMORY" --cpus "$APP_CPUS" \
       -e SPRING_PROFILES_ACTIVE=postgres \
@@ -152,7 +152,7 @@ case "$ACTION" in
       -e POSTGRES_USER=petclinic -e POSTGRES_PASS=petclinic \
       "${ECR_URL}:${VARIANT}" >/dev/null
 
-    local first_200_ts=""
+    first_200_ts=""
     for _ in $(seq 1 900); do
       first_200_ts=$(awk -v st="$start_ts" '$1>=st && $2=="200" {print $1; exit}' "$probe_log" 2>/dev/null || true)
       [[ -n "$first_200_ts" ]] && break
@@ -160,7 +160,7 @@ case "$ACTION" in
     done
 
     if [[ -n "$first_200_ts" ]]; then
-      local cold_ms; cold_ms=$(awk "BEGIN{printf \"%d\", ($first_200_ts - $start_ts) * 1000}")
+      cold_ms=$(awk "BEGIN{printf \"%d\", ($first_200_ts - $start_ts) * 1000}")
       echo "$cold_ms" > "$RESULTS_DIR/${VARIANT}-cold-start-ms.txt"
       log "$VARIANT cold-start-under-load: ${cold_ms}ms"
     else
