@@ -12,6 +12,7 @@ VARIANT="${2:?VARIANT required}"
 APP_IP="${3:?APP_IP required}"
 AWS_REGION="${4:?AWS_REGION required}"
 S3_BUCKET="${5:?S3_BUCKET required}"
+ITER="${6:-}"   # optional iteration tag; suffixes peak output as -iterN
 
 RESULTS_DIR="/tmp/benchmark-results"
 DURATION="${DURATION:-10m}"
@@ -37,15 +38,16 @@ case "$SCENARIO" in
     ;;
 
   peak)
-    log "k6 peak-RPS (${START_RPS}->${END_RPS} req/s over ${PEAK_DURATION}) against http://${APP_IP}:8080"
+    tag="${ITER:+-iter${ITER}}"
+    log "k6 peak-RPS (${START_RPS}->${END_RPS} req/s over ${PEAK_DURATION}) against http://${APP_IP}:8080${ITER:+ [iter $ITER]}"
     DURATION="$PEAK_DURATION" START_RPS="$START_RPS" END_RPS="$END_RPS" MAX_VUS="$PEAK_MAX_VUS" \
       k6 run \
-      --out "csv=$RESULTS_DIR/${VARIANT}-peak-rps.csv" \
-      --summary-export "$RESULTS_DIR/${VARIANT}-peak-rps-summary.json" \
+      --out "csv=$RESULTS_DIR/${VARIANT}-peak-rps${tag}.csv" \
+      --summary-export "$RESULTS_DIR/${VARIANT}-peak-rps${tag}-summary.json" \
       -e BASE_URL="http://${APP_IP}:8080" \
       -e START_RPS="$START_RPS" -e END_RPS="$END_RPS" \
       -e DURATION="$PEAK_DURATION" -e MAX_VUS="$PEAK_MAX_VUS" \
-      /tmp/k6/peak-rps.js 2>&1 | tee "$RESULTS_DIR/${VARIANT}-peak-rps-output.txt"
+      /tmp/k6/peak-rps.js 2>&1 | tee "$RESULTS_DIR/${VARIANT}-peak-rps${tag}-output.txt"
     ;;
 
   upload)

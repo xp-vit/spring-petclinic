@@ -158,12 +158,21 @@ def chart_throughput_over_time(results_dir: Path, out: Path):
         # trimmed series too.
         if len(rps) > 1:
             rps = rps.iloc[:-1]
-        ax.plot(rps.index, rps.values, label=f"{v} ({rps.mean():.0f} req/s avg)",
+        # Plot the full series (so the JIT warm-up ramp stays visible) but
+        # compute the legend average on the post-warm-up window only -- the
+        # ramp would otherwise drag the JVM's average unfairly low.
+        warm = rps[rps.index >= WARMUP_S]
+        avg = warm.mean() if len(warm) else rps.mean()
+        ax.plot(rps.index, rps.values,
+                label=f"{v} ({avg:.0f} req/s avg, after {WARMUP_S:.0f}s warm-up)",
                 color=COLORS[v], linewidth=2)
         plotted = True
     if not plotted:
         plt.close(fig)
         return
+    ax.axvline(WARMUP_S, color="gray", linestyle="--", linewidth=1, alpha=0.6)
+    ax.text(WARMUP_S + 4, ax.get_ylim()[0] + 10, f"warm-up cutoff ({WARMUP_S:.0f}s)",
+            color="gray", fontsize=8, rotation=90, va="bottom")
     ax.set_xlabel("Elapsed time (s)")
     ax.set_ylabel("Throughput (req/s, 5s buckets)")
     ax.set_title("Throughput over time: JVM (JIT warmup) vs Native (AOT)")
@@ -210,30 +219,20 @@ def chart_latency_bars(results_dir: Path, out: Path):
 
 def chart_startup_bar(results_dir: Path, out: Path):
     cold = {v: read_int(results_dir / f"{v}-startup-ms.txt") for v in VARIANTS}
-    load = {v: read_int(results_dir / f"{v}-cold-start-ms.txt") for v in VARIANTS}
-    if not any(cold.values()) and not any(load.values()):
+    if not any(cold.values()):
         return
-    present = [v for v in VARIANTS if cold.get(v) or load.get(v)]
+    present = [v for v in VARIANTS if cold.get(v)]
     fig, ax = plt.subplots(figsize=(9, 5))
     x = list(range(len(present)))
-    width = 0.35
     cold_vals = [cold.get(v) or 0 for v in present]
-    load_vals = [load.get(v) or 0 for v in present]
-    ax.bar([i - width/2 for i in x], cold_vals, width, label="Cold start (no load)",
-           color=[COLORS[v] for v in present])
-    ax.bar([i + width/2 for i in x], load_vals, width,
-           label="Cold start under load",
-           color=[COLORS[v] for v in present], alpha=0.55)
+    ax.bar(x, cold_vals, 0.5, color=[COLORS[v] for v in present])
     ax.set_xticks(x)
     ax.set_xticklabels(present)
     ax.set_ylabel("Time to first 200 (ms)")
-    ax.set_title("Startup time")
-    ax.legend()
+    ax.set_title("Cold start time")
     ax.grid(axis="y", alpha=0.3)
     for i, val in enumerate(cold_vals):
-        if val: ax.text(i - width/2, val, f"{val}", ha="center", va="bottom", fontsize=9)
-    for i, val in enumerate(load_vals):
-        if val: ax.text(i + width/2, val, f"{val}", ha="center", va="bottom", fontsize=9)
+        if val: ax.text(i, val, f"{val}", ha="center", va="bottom", fontsize=9)
     fig.tight_layout()
     fig.savefig(out, dpi=120)
     plt.close(fig)
@@ -474,25 +473,16 @@ def chart_summary_dashboard(results_dir: Path, out: Path):
     # 1) Startup bars (top-left)
     ax = axes[0, 0]
     cold = {v: read_int(results_dir / f"{v}-startup-ms.txt") for v in VARIANTS}
-    load = {v: read_int(results_dir / f"{v}-cold-start-ms.txt") for v in VARIANTS}
-    present_s = [v for v in VARIANTS if cold.get(v) or load.get(v)]
+    present_s = [v for v in VARIANTS if cold.get(v)]
     x = list(range(len(present_s)))
-    width = 0.35
     cold_vals = [cold.get(v) or 0 for v in present_s]
-    load_vals = [load.get(v) or 0 for v in present_s]
-    ax.bar([i - width/2 for i in x], cold_vals, width, label="Cold (no load)",
-           color=[COLORS[v] for v in present_s])
-    ax.bar([i + width/2 for i in x], load_vals, width, label="Cold under load",
-           color=[COLORS[v] for v in present_s], alpha=0.55)
+    ax.bar(x, cold_vals, 0.5, color=[COLORS[v] for v in present_s])
     ax.set_xticks(x); ax.set_xticklabels(present_s)
     ax.set_ylabel("Time to first 200 (ms)")
-    ax.set_title("Startup time")
-    ax.legend(fontsize=9)
+    ax.set_title("Cold start time")
     ax.grid(axis="y", alpha=0.3)
     for i, val in enumerate(cold_vals):
-        if val: ax.text(i - width/2, val, f"{val}", ha="center", va="bottom", fontsize=8)
-    for i, val in enumerate(load_vals):
-        if val: ax.text(i + width/2, val, f"{val}", ha="center", va="bottom", fontsize=8)
+        if val: ax.text(i, val, f"{val}", ha="center", va="bottom", fontsize=8)
 
     # 2) Throughput over time (top-right)
     ax = axes[0, 1]

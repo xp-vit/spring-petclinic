@@ -1,50 +1,71 @@
-# LinkedIn post — JVM vs GraalVM Native vs Native+PGO
+# LinkedIn post — JVM vs GraalVM Native
 
-I ran the same Spring Boot PetClinic on AWS in three configurations and
-the numbers told a more nuanced story than the usual "native is faster"
-headlines.
+A few weeks ago I posted about migrating a high-load Spring Boot service
+to a GraalVM native binary: memory per replica dropped from ~450 MB to
+~135 MB, startup from 45 s to 1.5 s. The chart was satisfying. The
+comments were better.
 
-Setup: c7i.large for the app, separate c5.large for k6, RDS db.t3.micro
-for Postgres. Same Java 25 LTS for all three. 10-minute mixed workload
-(50 VUs), then a 5-min ramp to find peak RPS. All numbers below drop the
-first 60 s so the JIT has time to warm up.
+The best one came from my friend and ex-colleague Siarhei Sushko, who
+pointed out the trade-off I had glossed over: **going native costs you
+JIT throughput**. He linked Quarkus's own benchmark write-up
+(https://quarkus.io/blog/new-benchmarks/#native-tradeoffs), which is
+honest enough to say it out loud.
 
-🏁 **Cold start (no load):** JVM 20.0s → Native 1.2s — **~17× faster**
-🚦 **Cold start under live traffic:** JVM 19.4s → Native 255 ms — **~76× faster**
-💾 **Memory under load:** JVM 422 MiB → Native 165 MiB — **~2.5× less RAM**
-📈 **Peak RPS at saturation:** JVM 374 → Native 391 — **+5%** on the same 2 vCPU
-📉 **p99 at saturation:** JVM 4.0s → Native 3.0s — **-25%**
-📦 **Container image:** 171 MB → 90 MB
+So I decided to actually measure it on Spring Boot. Same app
+(PetClinic — Thymeleaf + JPA, the canonical sample), two builds (JVM
+and GraalVM native), one cloud setup, head-to-head.
 
-But here is the part I didn't expect: **once the JIT is warm, the JVM has
-a lower p50 than native** (10 ms vs 20 ms) on sustained moderate load.
-C2 has runtime profile data the AOT compiler doesn't get. Native wins
-the tail (p95/p99), JIT wins the median.
+Setup: AWS c7i.large (2 vCPU) for the app, separate c5.large for k6,
+RDS Postgres db.t3.micro. Java 25 LTS for both. 10-min mixed workload at
+50 VUs, then a 5-min ramp to find peak RPS — and I ran the peak sweep
+five times per variant, because the first results refused to reproduce.
 
-And the cherry on top — **GraalVM PGO lost on AWS**.
+**Where native wins, every time:**
+🏁 Cold start: ~15 s → ~0.3 s — **~40× faster** (from Spring's own log)
+💾 Peak RSS under load: ~400 MiB → ~120 MiB — **2.5–4× less RAM**
+📦 Container image: ~180 MB → ~95 MB — about half
+📊 Sustained tail: native is the *predictable* one — p99 ~150 ms every run, while the JVM's swings 110–171 ms with GC luck
 
-I trained the PGO profile on my dev box, where Postgres ran on
-localhost. On AWS the database is RDS, query latency goes from
-microseconds to 1-3 ms, and the hot paths shifted entirely. The PGO
-build had carefully optimized code that production never executes. p50
-went up 60 %, peak RPS dropped 25 %.
+**The throughput trade-off Siarhei called out — confirmed:**
+Sustained moderate load: JVM p50 ~8–10 ms vs native ~18 ms; JVM serves a
+few % more RPS once warm.
 
-PGO is only as good as the workload you train it on. A localhost profile
-optimizing for production is like a runner doing high-altitude training
-at sea level.
+And peak/saturation is where it got interesting. A single run flip-flopped
+the winner, so I ran it 5×:
+- Native: **386 RPS ± 2** — identical from the very first request.
+- JVM: **~470 RPS once warm (+22 %)** — but its first saturation burst is
+  its *worst* (336 RPS, p99 4.8 s), and the warm ceiling drifts run to run.
 
-When to switch to native:
-✅ Scale-from-zero / serverless / Fargate / Lambda — startup wins
-✅ Tight p99 SLOs and saturation-prone workloads
-✅ Dense bin-packing — 4× less RSS per replica
-✅ Memory-constrained instances
+So Siarhei was right: the JIT gives the JVM a higher throughput ceiling.
+What the native side buys you isn't more peak — it's **predictability**:
+the same number every time, no warm-up window.
 
-When to stay on the JVM:
-🤷 Long-running workers with warm pools — JIT catches up anyway
+And here's the kicker for cost: that lower per-instance ceiling can flip in
+an autoscaled fleet. ~0.3 s starts + 2.5–4× less RAM = more small replicas
+per dollar, no warm-pool waste, scale-out that tracks traffic in seconds.
+Per box, the warm JVM wins; per dollar, elastic native can win the
+throughput back. (Reasoned from the startup + memory numbers — I didn't
+bench a full fleet.)
+
+**Reach for native when:**
+✅ Scale-from-zero / serverless / Fargate / Lambda — startup wins big
+✅ You need predictable latency from the first request (no warm-up)
+✅ Dense bin-packing / memory-constrained instances — 2.5–4× less RSS
+✅ Predictable tail matters more than the lowest median (low variance)
+
+**Stay on the JVM when:**
+🤷 Long-running warm workers that can hit a high throughput ceiling
+🤷 Median (not tail) is what matters
 🤷 Heavy reflection / dynamic loading you can't easily annotate
-🤷 Workloads where median (not tail) matters
 
-Full write-up + reproducible Terraform + k6 + matplotlib scripts:
+So Siarhei was right, and so was the original post. Native isn't a free
+upgrade — it's a different operating point: better startup, far less
+memory, dead-predictable latency; in return a higher median, a lower peak
+ceiling, and a tail that's steadier but not always lower than a warm JIT's.
+The comment that made me measure it properly — and run it until it
+reproduced — is what made the story honest.
+
+Full write-up, charts, reproducible Terraform + k6 + matplotlib:
 <https://github.com/xp-vit/spring-petclinic/tree/main/benchmark>
 
-#java #springboot #graalvm #aws #performance #pgo
+#java #springboot #graalvm #aws #performance

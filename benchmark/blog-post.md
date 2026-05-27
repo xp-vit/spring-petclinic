@@ -2,14 +2,17 @@
 
 > **TL;DR** — On a 2 vCPU / 4 GB AWS c7i.large with Postgres on a separate
 > RDS db.t3.micro and k6 on its own EC2:
-> - GraalVM native starts **~17× faster** (1.2 s vs 20 s).
-> - Cold start while traffic is hitting the port: native is **~76×
->   faster** (255 ms vs 19.4 s).
-> - Native handles **+5 % more peak RPS** under saturation, with a
->   **~24 % tighter p99**.
-> - The JVM, _once warm_, has a lower **p50** (10 ms vs 20 ms native)
->   and serves ~5 % more sustained RPS at moderate load.
-> - Native peak RSS is **~2.5× lower** (165 MiB vs 422 MiB).
+> - GraalVM native starts in **~0.3 s vs ~15 s** — roughly **40× faster**,
+>   measured from Spring Boot's own startup log and steady across runs.
+> - The JVM, _once warm_, has a lower **p50** (≈8–10 ms vs ≈18–20 ms
+>   native) and serves a few % more sustained RPS at moderate load.
+> - At saturation it depends on warm-up: a fully-warm JVM serves **~22 %
+>   more peak RPS** (~470 vs ~386), but **native hits its peak from the
+>   first request** with near-zero variance — the JVM's first burst is its
+>   *worst*.
+> - Native's sustained **tail is the predictable one** (p99 ~150 ms every
+>   run; the warm JVM is often lower but swings 110–171 ms), and it uses
+>   **~2.5–4× less memory** (≈100–165 MiB vs ≈390–420 MiB).
 > - GraalVM PGO did **not** win on AWS — because we trained the profile on
 >   the dev box against a localhost Postgres, so the PGO build optimized
 >   for the wrong hot path. Lesson: PGO is only as good as the workload
@@ -46,7 +49,7 @@ Three variants:
 | Container limit | 1 CPU / 512 MB cgroup                                            |
 | Sustained load  | k6 mixed workload, **50 VUs, 10 min**, 4 scenarios (40/20/20/20) |
 | Saturation load | k6 `ramping-arrival-rate`, **100 → 2000 req/s over 5 min**       |
-| Cold start      | 10 req/s probe + container start, measure first 200              |
+| Cold start      | container start → time until `/actuator/health` answers 200     |
 
 Workload mix: `GET /owners?lastName=Davis` (40 %), `GET /owners/{id}` (20 %),
 `GET /vets` JSON (20 %), `POST /owners/new` (20 %).
@@ -76,56 +79,101 @@ ran out mid-test. `c7i.large` holds full CPU the whole time.
 
 | Variant | RPS     | p50    | p95    | p99     | Errors |
 |---------|---------|--------|--------|---------|--------|
-| JVM     | **414** | **10** | 89     | 171     | 0      |
-| Native  | 393     | 20     | **69** | **147** | 0      |
+| JVM     | **434** | **8**  | **64** | **110** | 0      |
+| Native  | 396     | 18     | 69     | 152     | 0      |
+
+_The tail is the catch: across two runs the JVM's p99 swung **110–171 ms**
+while native's barely moved (**147–152 ms**). This run the warm JVM had the
+lower tail; the previous run native did. Native's tail is the_ predictable
+_one, not reliably the lowest._
 
 ![Throughput over time](results/aws-v2/charts/throughput-over-time.png)
 
-The JIT warm-up is visible in the orange line: JVM throughput ramps from
-~100 req/s at boot to ~450 req/s after about 3 minutes. Native serves
-~400 req/s from the first second. After warm-up, JVM serves slightly
-more sustained throughput (414 vs 393, +5 %) on moderate load.
+The periodic dips on _both_ lines are SerialGC stop-the-world pauses (the
+default GC at this heap size, for native too): a sub-second freeze shows up
+as one low 5-second bucket and recovers in the next, with zero failed
+requests. G1 would smooth them out — at a higher memory cost, which is
+exactly the trade you don't want on a memory-constrained container.
 
-The hot-path p50 also belongs to the JIT (10 ms vs 20 ms native): C2 has
-runtime profile data the AOT compiler doesn't get, and PetClinic's
-most-frequent path is small enough that it fits well in C2's optimized
-form. The tail (p95/p99) goes to native, because there are no GC pauses.
+The JIT warm-up is visible in the orange line: JVM throughput ramps from
+~100 req/s at boot to ~450 req/s after about two minutes. Native serves
+~400 req/s from the first second. After warm-up, JVM serves a bit more
+sustained throughput (434 vs 396, +10 %) on moderate load.
+
+The hot-path p50 belongs to the JIT (8 ms vs 18 ms native): C2 has runtime
+profile data the AOT compiler doesn't get, and PetClinic's most-frequent
+path is small enough that it fits well in C2's optimized form. The tail is
+subtler than I first thought: I originally wrote that native wins p95/p99
+(no GC pauses), and in one run it did — but re-running showed the JVM's tail
+swinging run-to-run while native's stays flat. The honest read: native gives
+a _predictable_ tail, not a guaranteed-lower one; a warm JVM is often lower
+but rolls the dice on GC.
 
 ### Peak-RPS saturation sweep (100 → 2000 req/s over 5 min)
 
-| Variant | Achieved RPS | p50  | p95      | p99      | Errors |
-|---------|--------------|------|----------|----------|--------|
-| JVM     | 374          | 1109 | 2822     | 3995     | 0      |
-| Native  | **391**      | 1212 | **2356** | **3049** | 0      |
+This is the number that fooled me first. A single peak sweep picked a
+different winner almost every run, so I ran the sweep **five times
+back-to-back against the same warm container** per variant:
 
-![Peak-RPS sweep](results/aws-v2/charts/peak-rps.png)
+![Peak-RPS across five runs](results/aws-v2-peak/charts/peak-iterations.png)
 
-When the CPU is the bottleneck, native gets more work per cycle because
-it isn't spending CPU on JIT compilation + GC. p99 latency at saturation
-drops by ~24 % on native. Neither variant returned 5xx — k6 just queued
-requests as latency grew.
+| Variant              | Peak RPS  | p50      | p95       | p99       | Errors |
+|----------------------|-----------|----------|-----------|-----------|--------|
+| JVM (warm, runs 2–5) | **~470**  | ~615 ms  | ~2000 ms  | ~2800 ms  | 0      |
+| JVM (run 1, cold)    | 336       | 1109 ms  | 3295 ms   | 4823 ms   | 0      |
+| Native (all 5 runs)  | 386 ± 2   | ~800 ms  | ~2500 ms  | ~3388 ms  | 0      |
+
+Once the JVM is fully warm it wins peak throughput by ~22 % (≈470 vs 386
+RPS) at a lower median — C2 has compiled the hot path and the larger heap
+absorbs the burst. But native is boringly consistent: 386 RPS with a
+standard deviation of *2*, identical from the first request. The JVM's
+first saturation burst is its *worst* (336 RPS, p99 4.8 s) even after a
+warm-up, and its warm ceiling drifts run to run. "Who wins peak" is the
+wrong question: JVM has the higher warm ceiling, native gives the same
+predictable number every time with no warm-up. No 5xx either way — k6 just
+queued as latency grew.
+
+### The autoscaling angle (where the per-instance loss can flip on cost)
+
+That ~470-vs-386 win is a *single-instance* number. In an autoscaled fleet
+the economics can invert. Native starts in ~0.3 s and uses 2.5–4× less
+memory: you can pack more replicas per node when memory is the binding
+limit, drop the warm-pool over-provisioning needed to hide 15 s JVM starts,
+and scale out in lockstep with traffic instead of minutes behind. For the
+same monthly spend you can often run more small native replicas — and more
+*aggregate*, predictable throughput — than a handful of larger JVM boxes,
+even though each JVM box wins head-to-head when warm. Caveats: I didn't
+benchmark a full fleet (this is the implication of the startup + memory
+numbers, not a measured result), and the win comes from right-sizing on
+memory *without giving up cores* — at a fixed 2 vCPU you can drop from
+r7i.large (16 GB) or m7i.large (8 GB) to c7i.large (4 GB), same cores lower
+bill, or bin-pack more containers per node. What native doesn't do is
+conjure free CPU: here the 2 vCPU saturated long before the ~120 MiB of RAM
+mattered, so a genuinely smaller (fewer-core) instance would serve less.
 
 ### Startup
 
-| Scenario                      | JVM    | Native     |
-|-------------------------------|--------|------------|
-| Cold start (no load)          | 20.0 s | 1.16 s     |
-| Cold start under live traffic | 19.4 s | **255 ms** |
+Measured straight from Spring Boot's own `Started … in X seconds (process
+running for Y)` log line — no health-poll quantisation:
 
-![Startup time](results/aws-v2/charts/startup-bar.png)
+| Metric               | JVM      | Native          |
+|----------------------|----------|-----------------|
+| Spring "Started in"  | 14–17 s  | **0.30–0.39 s** |
+| Process exec → ready | 16–18 s  | **0.36–0.39 s** |
 
-If you're paying for over-provisioned warm pools to hide JVM startup —
-native lets you drop those. Cold-start-under-load is the honest number:
-a container starts while users are already hitting the new endpoint, and
-we measure ms until it answers 200.
+Native boots roughly **40–50× faster**, rock-steady across runs. If you're
+paying for over-provisioned warm pools to hide JVM startup, native lets you
+drop them. (An earlier draft quoted native at 1.16 s — that was a 1-second
+health-poll rounding a sub-second boot up to the next tick; Spring's own
+log says ~0.3 s.)
 
 ### Memory and image size
 
-JVM peak RSS lands at **422 MiB** under load, native at **165 MiB** —
-**~2.5× less memory**. JVM container image is 171 MB, native is 91 MB
-— **half the size**. On 4 GB instances the absolute memory number is
-small, but on bin-packed nodes (k8s, Fargate) it means more replicas
-per host.
+JVM peak RSS lands around **390–420 MiB** under load, native around
+**100–165 MiB** — **2.5–4× less memory** (varies run to run, native always
+far lower). JVM container image is ~180 MB, native ~95 MB — **about half**.
+On 4 GB instances the absolute number is small, but on bin-packed nodes
+(k8s, Fargate) it means more replicas per host.
 
 ## The PGO surprise
 

@@ -100,17 +100,26 @@ start_container() {
     -e POSTGRES_USER=petclinic -e POSTGRES_PASS=petclinic \
     "${mounts[@]}" "$image" >/dev/null
 
-  for i in $(seq 1 180); do
+  # Poll at 100ms so a sub-second native boot isn't quantised to the 1s grid.
+  for i in $(seq 1 1800); do
     if curl -sf "http://localhost:${APP_PORT}/actuator/health" >/dev/null 2>&1; then
       local ready_ts; ready_ts=$(date +%s%N)
       local startup_ms=$(( (ready_ts - start_ts) / 1000000 ))
       echo "$startup_ms" > "$RESULTS_DIR/${VARIANT}-startup-ms.txt"
-      log "$VARIANT startup: ${startup_ms}ms"
+      # Authoritative startup straight from Spring's own log line, free of any
+      # poll quantisation:  "Started X in <a> seconds (process running for <b>)"
+      local logs started_s proc_s
+      logs=$(docker logs "$CNAME" 2>&1 || true)
+      started_s=$(echo "$logs" | grep -oE 'Started [A-Za-z0-9_]+ in [0-9.]+ seconds' | tail -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+      proc_s=$(echo "$logs" | grep -oE 'process running for [0-9.]+' | tail -1 | grep -oE '[0-9]+\.[0-9]+' | head -1 || true)
+      [[ -n "$started_s" ]] && echo "$started_s" > "$RESULTS_DIR/${VARIANT}-spring-started-s.txt" || true
+      [[ -n "$proc_s" ]] && echo "$proc_s" > "$RESULTS_DIR/${VARIANT}-process-running-s.txt" || true
+      log "$VARIANT startup: probe ${startup_ms}ms | Spring ${started_s:-?}s | process ${proc_s:-?}s"
       docker image inspect "$image" --format '{{.Size}}' \
         > "$RESULTS_DIR/${VARIANT}-image-size-bytes.txt"
       return 0
     fi
-    sleep 1
+    sleep 0.1
   done
   log "ERROR: $VARIANT did not become healthy in 180s"
   docker logs "$CNAME" --tail 80
