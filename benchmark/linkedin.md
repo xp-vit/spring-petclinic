@@ -65,7 +65,8 @@ ceiling, and a tail that's steadier but not always lower than a warm JIT's.
 The comment that made me measure it properly — and run it until it
 reproduced — is what made the story honest.
 
-Full write-up, charts, reproducible Terraform + k6 + matplotlib:
-<https://github.com/xp-vit/spring-petclinic/tree/main/benchmark>
+Full write-up — all the charts, the reproducibility runs, and the
+Terraform + k6 + matplotlib scripts to repeat it:
+https://patotski.com/blog/spring-boot-jvm-vs-graalvm-native-benchmark
 
 #java #springboot #graalvm #aws #performance

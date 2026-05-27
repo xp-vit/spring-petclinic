@@ -140,7 +140,9 @@ def write_steady_state_report(results_dir: Path, out: Path):
 
 
 def chart_throughput_over_time(results_dir: Path, out: Path):
-    fig, ax = plt.subplots(figsize=(10, 5))
+    # 16:9 aspect (1.778) so it survives the blog hero's object-fit:cover
+    # crop without losing the axis labels or legend.
+    fig, ax = plt.subplots(figsize=(10, 5.625))
     plotted = False
     for v in VARIANTS:
         df = load_k6_csv(results_dir / f"{v}-k6-results.csv")

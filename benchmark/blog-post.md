@@ -228,9 +228,10 @@ native is the safe bet; PGO needs careful tuning per-application**.
 If your service:
 
 - runs in a serverless / scale-from-zero environment (Lambda, Fargate, Knative)
+- sees bursty, occasional, or low traffic — the JVM's JIT never gets enough sustained work to reach its warm advantage, so it lives on its slower cold curve anyway
 - needs tight memory budgets for density
-- has latency SLOs that include the tail (p99)
-- saturates CPU under peak load
+- needs a *predictable* tail (low variance) more than the lowest median
+- needs predictable performance from the first request (no warm-up window)
 
 …then native pays for itself in startup time and predictability.
 
