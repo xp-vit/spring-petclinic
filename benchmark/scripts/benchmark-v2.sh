@@ -66,16 +66,27 @@ tf_destroy() {
 # --- Build + push images ---
 build_and_push() {
   local ecr_url="$1"
+  if [[ "${SKIP_BUILD:-0}" == "1" ]]; then
+    log "SKIP_BUILD=1 — reusing images already in ECR, skipping build+push"
+    return
+  fi
   log "Building images: $VARIANTS"
+  # build.sh produces jvm + jaz + native in one go; run it if any are requested.
   for v in $VARIANTS; do
     case "$v" in
-      jvm|native)
+      jvm|jaz|native)
         "$SCRIPT_DIR/build.sh"
-        break  # build.sh builds both jvm + native in one go
+        break
         ;;
     esac
   done
+  if [[ "$VARIANTS" == *native-mlpgo* ]]; then
+    "$SCRIPT_DIR/build-native-mlpgo.sh"
+  fi
   if [[ "$VARIANTS" == *native-pgo* ]]; then
+    # Local quick profile (curl loop). For the publishable PGO number, refine
+    # with retrain-pgo-on-rds.sh after this run — it trains on the prod topology
+    # with the real k6 workload (the "correct profile").
     "$SCRIPT_DIR/build-native-pgo.sh"
   fi
 
@@ -127,24 +138,29 @@ run_variant() {
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
     "sudo -n /tmp/app-on-ec2.sh start $variant $ecr_url $rds_host $AWS_REGION $s3_bucket mixed"
   ssh $SSH_OPTS "ubuntu@${k6_ip}" \
-    "/tmp/k6-on-ec2.sh mixed $variant $app_private_ip $AWS_REGION $s3_bucket"
+    "/tmp/k6-on-ec2.sh mixed $variant $app_private_ip $AWS_REGION $s3_bucket" \
+    || log "WARN: $variant mixed k6 exited non-zero — continuing"
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
-    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket mixed"
+    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket mixed" || true
 
   sleep 10
 
   # Phase B: peak-RPS (5 min ramp, fresh container)
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
     "sudo -n /tmp/app-on-ec2.sh start $variant $ecr_url $rds_host $AWS_REGION $s3_bucket peak"
-  # JIT warm-up burst for JVM
-  if [[ "$variant" == "jvm" ]]; then
+  # JIT warm-up burst for JVM-based variants (jvm + jaz) — native is AOT, no warm-up.
+  if [[ "$variant" == "jvm" || "$variant" == "jaz" ]]; then
     ssh $SSH_OPTS "ubuntu@${k6_ip}" \
       "for _ in \$(seq 1 300); do curl -s -o /dev/null http://${app_private_ip}:8080/vets -H 'Accept: application/json' || true; sleep 0.1; done"
   fi
+  # k6 exits 99 when a threshold breaks (e.g. a variant OOM-kills under burst).
+  # That's a result, not a harness error — record it and keep going so one
+  # variant's saturation failure doesn't abort the whole multi-variant run.
   ssh $SSH_OPTS "ubuntu@${k6_ip}" \
-    "/tmp/k6-on-ec2.sh peak $variant $app_private_ip $AWS_REGION $s3_bucket"
+    "/tmp/k6-on-ec2.sh peak $variant $app_private_ip $AWS_REGION $s3_bucket" \
+    || log "WARN: $variant peak k6 exited non-zero (threshold breach / app died) — continuing"
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
-    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket peak"
+    "sudo -n /tmp/app-on-ec2.sh stop $variant $ecr_url $rds_host $AWS_REGION $s3_bucket peak" || true
 
   # Phase C: cold-start under load (app-side only, loopback probe)
   ssh $SSH_OPTS "ubuntu@${app_ip}" \
@@ -188,7 +204,8 @@ wait_for_user_data "$K6_IP" "k6"
 deploy_scripts "$APP_IP" "$K6_IP"
 
 for variant in $VARIANTS; do
-  run_variant "$variant" "$APP_IP" "$K6_IP" "$ECR_URL" "$RDS_HOST" "$S3_BUCKET" "$APP_PRIVATE_IP"
+  run_variant "$variant" "$APP_IP" "$K6_IP" "$ECR_URL" "$RDS_HOST" "$S3_BUCKET" "$APP_PRIVATE_IP" \
+    || log "WARN: variant $variant failed — continuing to next"
 done
 
 # Upload all results from both EC2s
@@ -207,7 +224,14 @@ if [[ -x "$BENCHMARK_DIR/.venv/bin/python" ]]; then
 fi
 "$SCRIPT_DIR/generate-report.sh" "$RESULTS_DIR" || true
 
-tf_destroy
+# KEEP_INFRA=1 leaves the stack up so retrain-pgo-on-rds.sh can train + measure
+# the correct-profile native-pgo on the SAME EC2+RDS before teardown.
+if [[ "${KEEP_INFRA:-0}" == "1" ]]; then
+  log "KEEP_INFRA=1 — leaving stack up. Destroy later with:"
+  log "  cd $TF_DIR && TF_VAR_ssh_public_key=${SSH_KEY}.pub terraform destroy -auto-approve -var aws_region=$AWS_REGION"
+else
+  tf_destroy
+fi
 
 log "=== v2 benchmark complete ==="
 log "Results: $RESULTS_DIR"

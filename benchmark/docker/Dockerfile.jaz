@@ -1,0 +1,22 @@
+# JVM variant launched through the Azure Command Launcher for Java (`jaz`).
+# Same fat JAR as Dockerfile.jvm; only the launcher differs.
+# jaz reads cgroup limits and picks cloud-tuned JVM flags (heap sizing, GC).
+# Build stage stays on Temurin 25 so the JAR is byte-identical to the jvm variant.
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /app
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY src/ src/
+RUN ./gradlew bootJar -x test -x checkstyleMain -x checkstyleTest -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon
+
+# Runtime: Microsoft Build of OpenJDK 25 image ships `jaz` preinstalled.
+FROM mcr.microsoft.com/openjdk/jdk:25-ubuntu
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar app.jar
+RUN mkdir -p /var/log/petclinic
+EXPOSE 8080
+# JAZ_IGNORE_USER_TUNING=1 forces jaz to apply its cloud tuning even though we
+# pass -Xlog:gc* for parity with the jvm variant (jaz otherwise backs off when
+# it sees any user JVM flag). -Xlog is diagnostics, not tuning.
+ENV JAZ_IGNORE_USER_TUNING=1
+ENTRYPOINT ["jaz", "-Xlog:gc*,gc+heap=debug:file=/var/log/petclinic/gc.log:time,level,tags", "-jar", "app.jar"]

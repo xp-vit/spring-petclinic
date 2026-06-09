@@ -24,6 +24,13 @@ docker build \
   "$PROJECT_ROOT"
 
 echo ""
+echo "--- Building jaz image (JVM via Azure Command Launcher) ---"
+docker build \
+  -f "$DOCKER_DIR/Dockerfile.jaz" \
+  -t petclinic:jaz \
+  "$PROJECT_ROOT"
+
+echo ""
 echo "--- Building Native image (this takes several minutes) ---"
 docker build \
   -f "$DOCKER_DIR/Dockerfile.native" \
@@ -32,4 +39,6 @@ docker build \
 
 echo ""
 echo "=== Build complete ==="
+echo "Note: petclinic:native-mlpgo and petclinic:native-pgo are built by their"
+echo "      own host-GraalVM scripts (build-native-mlpgo.sh / build-native-pgo.sh)."
 docker images | grep petclinic

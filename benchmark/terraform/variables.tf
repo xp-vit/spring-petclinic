@@ -23,9 +23,9 @@ variable "name_prefix" {
 }
 
 variable "rds_instance_class" {
-  description = "RDS instance class (v2 architecture)"
+  description = "RDS instance class (v2 architecture). Non-burstable: a long multi-variant run sustains DB load for >90 min, which drains db.t3.micro CPU credits and throttles the DB mid-run (later variants get starved). m7i.large holds full CPU the whole time."
   type        = string
-  default     = "db.t3.micro"
+  default     = "db.m7i.large"
 }
 
 variable "rds_password" {

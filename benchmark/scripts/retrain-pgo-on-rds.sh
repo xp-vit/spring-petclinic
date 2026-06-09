@@ -14,7 +14,7 @@
 #   4. SSH k6 EC2: drive a 60-s mixed workload against the app's private IP.
 #   5. SSH app EC2: graceful-stop container and docker-cp default.iprof out.
 #   6. SCP iprof back to local.
-#   7. Stage 3 locally: nativeCompile --pgo=<iprof> -O3 --gc=G1 -march=x86-64-v3
+#   7. Stage 3 locally: nativeCompile --pgo=<iprof> -march=x86-64-v3 (default GC/opt)
 #   8. Re-tag as petclinic:native-pgo, push to ECR.
 #   9. Re-run native-pgo phases on AWS (mixed + peak + cold-start), upload, download.
 set -euo pipefail
@@ -39,7 +39,7 @@ if [[ -z "${GRAALVM_HOME:-}" ]]; then
     [[ -x "$cand/bin/native-image" ]] && GRAALVM_HOME="$cand" && break
   done
 fi
-if ! "$GRAALVM_HOME/bin/native-image" --help 2>&1 | grep -q -- '--pgo '; then
+if ! "$GRAALVM_HOME/bin/native-image" --version 2>&1 | grep -q 'Oracle GraalVM'; then
   echo "ERROR: Oracle GraalVM 25 required for --pgo. Install:"
   echo "       sdk install java 25.0.3-graal"
   exit 2
@@ -136,21 +136,33 @@ for i in $(seq 1 120); do
   sleep 1
 done
 
-# Drive 60 s of mixed workload from k6 EC2.
-log "Driving 60 s of training workload from k6 EC2..."
-ssh $SSH_OPTS ubuntu@${K6_IP} "DURATION=1m VUS_TOTAL=50 k6 run \
+# Drive the training workload from k6 EC2 using the SAME script, VU count and
+# endpoint mix (40/20/20/20) as the measured benchmark — this is what makes the
+# PGO profile "correct": the optimizer sees the exact hot paths and branch
+# frequencies of the workload we report on. 3 min (not 60 s) so cold paths get
+# exercised and the profile has enough samples.
+TRAIN_DURATION="${TRAIN_DURATION:-3m}"
+log "Driving ${TRAIN_DURATION} of training workload (same mix as benchmark) from k6 EC2..."
+ssh $SSH_OPTS ubuntu@${K6_IP} "DURATION=$TRAIN_DURATION VUS_TOTAL=50 k6 run \
   -e BASE_URL=http://${APP_PRIVATE_IP}:8080 \
-  -e DURATION=1m -e VUS_TOTAL=50 \
+  -e DURATION=$TRAIN_DURATION -e VUS_TOTAL=50 \
   /tmp/k6/mixed-workload.js >/dev/null 2>&1 || true"
 
-# Graceful stop and copy out iprof.
-log "Stopping instrumented container and copying iprof out..."
-ssh $SSH_OPTS ubuntu@${APP_IP} "sudo -n docker exec petclinic-pgo-instr kill -INT 1 || true; \
-  sleep 5; \
-  sudo -n docker exec petclinic-pgo-instr kill -TERM 1 2>/dev/null || true; \
-  sleep 5; \
+# Graceful stop and copy out iprof. Signal from the HOST via `docker kill
+# --signal` — the slim runtime image has no `kill` binary, so `docker exec kill`
+# fails and the profile never flushes. SIGINT triggers Spring graceful shutdown,
+# which lets Substrate VM write default.iprof to the working dir before exit.
+log "Stopping instrumented container (host SIGINT -> flush default.iprof)..."
+ssh $SSH_OPTS ubuntu@${APP_IP} "sudo -n docker kill --signal=SIGINT petclinic-pgo-instr 2>/dev/null || true; \
+  for i in \$(seq 1 40); do \
+    sudo -n docker inspect -f '{{.State.Running}}' petclinic-pgo-instr 2>/dev/null | grep -q false && break; \
+    sleep 1; \
+  done; \
+  sudo -n docker kill --signal=SIGTERM petclinic-pgo-instr 2>/dev/null || true; \
+  sleep 3; \
   sudo -n docker cp petclinic-pgo-instr:/app/default.iprof /tmp/default.iprof 2>&1 || \
-  echo 'docker cp failed -- container may have already exited'"
+  echo 'docker cp failed -- container may have already exited'; \
+  sudo -n chmod 0644 /tmp/default.iprof 2>/dev/null || true"
 
 scp $SSH_OPTS "ubuntu@${APP_IP}:/tmp/default.iprof" "$WORK_DIR/default.iprof"
 ls -la "$WORK_DIR/default.iprof"
@@ -158,11 +170,23 @@ ls -la "$WORK_DIR/default.iprof"
 ssh $SSH_OPTS ubuntu@${APP_IP} "sudo -n docker rm -f petclinic-pgo-instr 2>/dev/null || true"
 
 PROFILE="$WORK_DIR/default.iprof"
-log "Profile collected: $(wc -c < "$PROFILE") bytes"
+# Fail loud on an empty/missing profile. A 0-byte iprof means the SIGINT/SIGTERM
+# flush failed and the "optimized" build would silently fall back to ML inference
+# (or no profile) — producing a mislabelled result. Better to abort than lie.
+PROFILE_BYTES=$( [[ -f "$PROFILE" ]] && wc -c < "$PROFILE" || echo 0 )
+if [[ "${PROFILE_BYTES:-0}" -lt 1000 ]]; then
+  echo "ERROR: PGO profile is empty or tiny (${PROFILE_BYTES} bytes). The instrumented"
+  echo "       binary likely didn't flush default.iprof. Aborting — refusing to build"
+  echo "       a 'native-pgo' image without a real profile."
+  exit 6
+fi
+log "Profile collected: ${PROFILE_BYTES} bytes"
 
 # --- Stage 4: optimized build ---
-log "Stage 4: nativeCompile --pgo=$PROFILE -O3 --gc=G1 -march=x86-64-v3 (~5 min)..."
-inject_args "'--pgo=${PROFILE}', '-O3', '--gc=G1', '-march=x86-64-v3'"
+# Default GC (Serial) + default opt level so the only difference from the CE and
+# ML native builds is the (correct) profile — controlled comparison.
+log "Stage 4: nativeCompile --pgo=$PROFILE -march=x86-64-v3 (~5 min)..."
+inject_args "'--pgo=${PROFILE}', '-march=x86-64-v3'"
 cd "$PROJECT_ROOT"
 ./gradlew nativeCompile -x test -x checkstyleMain -x checkstyleTest \
   -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon

@@ -47,7 +47,8 @@ require() {
 
 cleanup() {
   log "Cleanup..."
-  docker rm -f petclinic-jvm petclinic-native "$PG_NAME" 2>/dev/null || true
+  docker rm -f petclinic-jvm petclinic-jaz petclinic-native \
+    petclinic-native-mlpgo petclinic-native-pgo "$PG_NAME" 2>/dev/null || true
   if [[ -n "${STATS_PID:-}" ]]; then kill "$STATS_PID" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
@@ -149,7 +150,7 @@ run_variant() {
   local extra_mounts=()
   local gc_host_dir="$RESULTS_DIR/${variant}-gc"
   rm -rf "$gc_host_dir"; mkdir -p "$gc_host_dir"
-  if [[ "$variant" == "jvm" ]]; then
+  if [[ "$variant" == "jvm" || "$variant" == "jaz" ]]; then
     extra_mounts+=("-v" "$gc_host_dir:/var/log/petclinic")
   fi
 
@@ -213,7 +214,7 @@ run_variant() {
     > "$RESULTS_DIR/${variant}-stats-after.txt" || true
 
   # GC log capture
-  if [[ "$variant" == "jvm" ]]; then
+  if [[ "$variant" == "jvm" || "$variant" == "jaz" ]]; then
     # Already written by mounted volume; just confirm
     if compgen -G "$gc_host_dir/gc.log*" > /dev/null; then
       log "GC log: $(ls $gc_host_dir/)"
@@ -241,7 +242,7 @@ main() {
   local variants_to_run
   case "$VARIANT" in
     both) variants_to_run="jvm native";;
-    all)  variants_to_run="jvm native native-pgo";;
+    all)  variants_to_run="jvm jaz native native-mlpgo native-pgo";;
     *)    variants_to_run="$VARIANT";;
   esac
 

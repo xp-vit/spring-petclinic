@@ -5,7 +5,8 @@
 #   2. Start it locally against Postgres (Docker), run a training workload
 #      (curl loop hitting representative endpoints) for ~60 s.
 #   3. Collect the default.iprof produced in the binary's working directory.
-#   4. Re-build native with --pgo=<iprof> -O3 --gc=G1.
+#   4. Re-build native with --pgo=<iprof> (default Serial GC / -O2, only the
+#      profile differs from the CE/ML builds; -march pinned for portability).
 #   5. Wrap the optimized binary in a docker image: petclinic:native-pgo
 #
 # Requires GraalVM 25 toolchain locally (gradle auto-provisions via foojay).
@@ -42,8 +43,8 @@ if [[ -z "${GRAALVM_HOME:-}" || ! -x "$GRAALVM_HOME/bin/native-image" ]]; then
   echo "       (PGO is not available in the Community Edition)"
   exit 2
 fi
-if ! "$GRAALVM_HOME/bin/native-image" --help 2>&1 | grep -q -- '--pgo '; then
-  echo "ERROR: native-image at $GRAALVM_HOME doesn't support --pgo (CE?)."
+if ! "$GRAALVM_HOME/bin/native-image" --version 2>&1 | grep -q 'Oracle GraalVM'; then
+  echo "ERROR: native-image at $GRAALVM_HOME is not Oracle GraalVM (no --pgo)."
   echo "       Install Oracle GraalVM: sdk install java 25.0.3-graal"
   exit 2
 fi
@@ -155,8 +156,10 @@ log "Profile collected: $(wc -c < "$PGO_PROFILE") bytes"
 # -march=x86-64-v3 gives an Intel/AMD-compatible AVX2 baseline (Haswell+).
 # We intentionally do NOT use -march=native because the dev box may differ
 # from the deployment target (e.g. AMD Zen build, Intel c7i runtime).
-log "Stage 3: nativeCompile --pgo=$PGO_PROFILE -O3 --gc=G1 -march=x86-64-v3 (this takes ~5 min)..."
-inject_args "'--pgo=${PGO_PROFILE}', '-O3', '--gc=G1', '-march=x86-64-v3'"
+# Default GC (Serial) + default opt level, only the profile differs from the
+# ML/CE builds — keeps the native comparison controlled (-march for portability).
+log "Stage 3: nativeCompile --pgo=$PGO_PROFILE -march=x86-64-v3 (this takes ~5 min)..."
+inject_args "'--pgo=${PGO_PROFILE}', '-march=x86-64-v3'"
 cd "$PROJECT_ROOT"
 ./gradlew nativeCompile -x test -x checkstyleMain -x checkstyleTest \
   -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon

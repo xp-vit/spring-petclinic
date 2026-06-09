@@ -89,7 +89,7 @@ start_container() {
   local gc_dir="$RESULTS_DIR/${VARIANT}-gc"
   rm -rf "$gc_dir"; mkdir -p "$gc_dir"
   local mounts=()
-  [[ "$VARIANT" == "jvm" ]] && mounts+=("-v" "$gc_dir:/var/log/petclinic")
+  [[ "$VARIANT" == "jvm" || "$VARIANT" == "jaz" ]] && mounts+=("-v" "$gc_dir:/var/log/petclinic")
   docker rm -f "$CNAME" >/dev/null 2>&1 || true
 
   local start_ts; start_ts=$(date +%s%N)

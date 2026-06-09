@@ -28,9 +28,15 @@ import pandas as pd
 
 # VARIANTS is overridable via $BENCH_VARIANTS (space-separated) so we can
 # render a chart set that excludes a variant we don't want to publish.
-_DEFAULT_VARIANTS = ["jvm", "native", "native-pgo"]
+_DEFAULT_VARIANTS = ["jvm", "jaz", "native", "native-mlpgo", "native-pgo"]
 VARIANTS = os.environ.get("BENCH_VARIANTS", " ".join(_DEFAULT_VARIANTS)).split()
-COLORS = {"jvm": "#e76f51", "native": "#2a9d8f", "native-pgo": "#1d3557"}
+COLORS = {
+    "jvm": "#e76f51",          # stock JVM — orange
+    "jaz": "#4c72b0",          # Azure launcher — Azure blue
+    "native": "#2a9d8f",       # CE native — teal
+    "native-mlpgo": "#8ab17d", # Oracle ML-inferred — light green
+    "native-pgo": "#1d3557",   # Oracle trained PGO — navy
+}
 
 # Seconds to drop from the start of each k6 CSV when computing steady-state
 # numbers (lets JIT warm up; native is unaffected).  Override with env
