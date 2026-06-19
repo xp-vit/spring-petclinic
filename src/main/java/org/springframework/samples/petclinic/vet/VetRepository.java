@@ -15,6 +15,7 @@
  */
 package org.springframework.samples.petclinic.vet;
 
+import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Page;
@@ -54,5 +55,27 @@ public interface VetRepository extends Repository<Vet, Integer> {
 	@Transactional(readOnly = true)
 	@Cacheable("vets")
 	Page<Vet> findAll(Pageable pageable) throws DataAccessException;
+
+	/**
+	 * Retrieve a single <code>Vet</code> by id. Used by the benchmark write path to load
+	 * a row before re-saving it. Not cached.
+	 * @param id the vet id
+	 * @return the <code>Vet</code>, or {@code null} if none
+	 */
+	@Transactional(readOnly = true)
+	Vet findById(Integer id);
+
+	/**
+	 * Persist a <code>Vet</code> and evict the whole {@code vets} cache. This is the
+	 * benchmark's write/invalidation path: a DB write plus a cache eviction, so the next
+	 * read is a miss that repopulates the cache. The eviction cost differs sharply by
+	 * backend (in-heap map removal for Caffeine vs a network round-trip for Redis), which
+	 * is exactly what the read+write workload measures.
+	 * @param vet the vet to persist
+	 * @return the persisted vet
+	 */
+	@Transactional
+	@CacheEvict(value = "vets", allEntries = true)
+	Vet save(Vet vet);
 
 }

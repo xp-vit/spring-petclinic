@@ -16,38 +16,76 @@
 
 package org.springframework.samples.petclinic.system;
 
-import org.springframework.boot.cache.autoconfigure.JCacheManagerCustomizer;
+import java.time.Duration;
+
+import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.cache.caffeine.CaffeineCacheManager;
+import org.springframework.cache.support.NoOpCacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-
-import javax.cache.configuration.MutableConfiguration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.data.redis.cache.RedisCacheConfiguration;
+import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
 
 /**
- * Cache configuration intended for caches providing the JCache API. This configuration
- * creates the used cache for the application and enables statistics that become
- * accessible via JMX.
+ * Cache configuration for the caffeine-vs-redis benchmark.
+ *
+ * <p>
+ * The {@code vets} cache is wired via Spring's cache abstraction
+ * ({@code @Cacheable("vets")} on {@code VetRepository}). The backing
+ * {@link CacheManager} is selected by Spring profile so the exact same fat JAR can be
+ * benchmarked under three cache strategies without any application-code change:
+ * <ul>
+ * <li>{@code cache-none} &rarr; {@link NoOpCacheManager}: every lookup misses, so every
+ * request hits the database (baseline).</li>
+ * <li>{@code cache-caffeine} &rarr; {@link CaffeineCacheManager}: in-heap, in-process. A
+ * hit is a local map lookup &mdash; no network, no serialization.</li>
+ * <li>{@code cache-redis} &rarr; {@link RedisCacheManager}: out-of-process. A hit pays
+ * serialization + a TCP round-trip to Redis.</li>
+ * </ul>
+ *
+ * <p>
+ * When none of these profiles is active (e.g. the test context), no {@code CacheManager}
+ * bean is defined here and Spring Boot's cache auto-configuration supplies a default
+ * (Caffeine, since it is on the classpath) &mdash; preserving the original behaviour the
+ * integration tests rely on.
  */
 @Configuration(proxyBeanMethods = false)
 @EnableCaching
 class CacheConfiguration {
 
+	/** Baseline: caching is a no-op, so every {@code @Cacheable} call reaches the DB. */
 	@Bean
-	public JCacheManagerCustomizer petclinicCacheConfigurationCustomizer() {
-		return cm -> cm.createCache("vets", cacheConfiguration());
+	@Profile("cache-none")
+	CacheManager noOpCacheManager() {
+		return new NoOpCacheManager();
+	}
+
+	/** In-process, in-heap cache. Hit = local map lookup; no network, no serialization. */
+	@Bean
+	@Profile("cache-caffeine")
+	CacheManager caffeineCacheManager() {
+		return new CaffeineCacheManager("vets", "report", "stats");
 	}
 
 	/**
-	 * Create a simple configuration that enable statistics via the JCache programmatic
-	 * configuration API.
+	 * Out-of-process cache. A hit pays JDK serialization + a TCP round-trip to Redis.
 	 * <p>
-	 * Within the configuration object that is provided by the JCache API standard, there
-	 * is only a very limited set of configuration options. The really relevant
-	 * configuration options (like the size limit) must be set via a configuration
-	 * mechanism that is provided by the selected JCache implementation.
+	 * Values use the {@link RedisCacheManager} default serializer (JDK serialization).
+	 * This is Spring Boot's out-of-the-box behaviour and round-trips the cached
+	 * {@code Collection<Vet>} faithfully because the PetClinic domain graph
+	 * ({@code BaseEntity} and its subtypes) already implements {@link java.io.Serializable}
+	 * &mdash; avoiding the JSON/Hibernate-collection type-binding pitfalls that a custom
+	 * JSON serializer would hit. The serialization + network cost it adds (versus
+	 * Caffeine's in-heap reference) is exactly the trade-off this benchmark measures.
 	 */
-	private javax.cache.configuration.Configuration<Object, Object> cacheConfiguration() {
-		return new MutableConfiguration<>().setStatisticsEnabled(true);
+	@Bean
+	@Profile("cache-redis")
+	CacheManager redisCacheManager(RedisConnectionFactory connectionFactory) {
+		RedisCacheConfiguration config = RedisCacheConfiguration.defaultCacheConfig().entryTtl(Duration.ofMinutes(10));
+		return RedisCacheManager.builder(connectionFactory).cacheDefaults(config).build();
 	}
 
 }

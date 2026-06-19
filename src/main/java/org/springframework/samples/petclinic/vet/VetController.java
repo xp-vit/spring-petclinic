@@ -20,9 +20,12 @@ import java.util.List;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 
@@ -73,6 +76,25 @@ class VetController {
 		Vets vets = new Vets();
 		vets.getVetList().addAll(this.vetRepository.findAll());
 		return vets;
+	}
+
+	/**
+	 * Benchmark write/invalidation path: load a vet and re-save it. The save is a real DB
+	 * write and evicts the {@code vets} cache (see {@link VetRepository#save}), so the
+	 * next {@code GET /vets} is a cache miss that repopulates the backing cache. The
+	 * caching workload mixes a small fraction of these writes in with the reads to
+	 * measure eviction + repopulation cost across cache backends.
+	 * @param id the vet id to touch
+	 * @return 200 with {@code "ok"} if the vet exists, 404 otherwise
+	 */
+	@PostMapping("/vets/{id}/touch")
+	public @ResponseBody ResponseEntity<String> touchVet(@PathVariable Integer id) {
+		Vet vet = this.vetRepository.findById(id);
+		if (vet == null) {
+			return ResponseEntity.notFound().build();
+		}
+		this.vetRepository.save(vet);
+		return ResponseEntity.ok("ok");
 	}
 
 }
