@@ -98,13 +98,14 @@ flag_for() { [[ "$1" == "virtual" ]] && echo "true" || echo "false"; }
 start_app() {
   local mode="$1" vflag; vflag="$(flag_for "$mode")"
   docker rm -f "$APP_NAME" 2>/dev/null || true
-  log "Starting app (mode=$mode, virtual.enabled=$vflag, hikari=$HIKARI_MAX_POOL)..."
+  log "Starting app (mode=$mode, virtual.enabled=$vflag, hikari=$HIKARI_MAX_POOL, tomcat.max=${TOMCAT_THREADS_MAX:-200})..."
   docker run -d --name "$APP_NAME" --network host --memory "$APP_MEMORY" --cpus "$APP_CPUS" \
     -e SPRING_PROFILES_ACTIVE="postgres,loom" \
     -e SPRING_THREADS_VIRTUAL_ENABLED="$vflag" \
     -e SERVER_PORT="$APP_PORT" \
     -e LOOM_STUB_URL="http://localhost:${STUB_PORT}" \
     -e HIKARI_MAX_POOL="$HIKARI_MAX_POOL" \
+    -e TOMCAT_THREADS_MAX="${TOMCAT_THREADS_MAX:-200}" \
     -e POSTGRES_URL="jdbc:postgresql://localhost:5432/petclinic" \
     -e POSTGRES_USER=petclinic -e POSTGRES_PASS=petclinic \
     petclinic:jvm >/dev/null

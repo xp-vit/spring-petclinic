@@ -13,7 +13,7 @@
 #   cpu      : platform vs virtual  x  sweep               (Loom does NOT help — honest case)
 #
 # Usage:
-#   AWS_PROFILE=govplus-development ./benchmark/scripts/benchmark-loom-aws.sh
+#   AWS_PROFILE=<your-aws-profile> ./benchmark/scripts/benchmark-loom-aws.sh
 #
 # Env overrides:
 #   AWS_REGION, SSH_KEY, ENDPOINTS, LEVELS, DURATION, MS, ITERS
@@ -28,7 +28,7 @@ TF_DIR="$BENCHMARK_DIR/terraform"
 RESULTS_DIR="$BENCHMARK_DIR/results/aws-loom"
 
 AWS_REGION="${AWS_REGION:-eu-central-1}"
-AWS_PROFILE="${AWS_PROFILE:-govplus-development}"
+AWS_PROFILE="${AWS_PROFILE:-default}"
 ENDPOINTS="${ENDPOINTS:-slow slow-db cpu}"
 LEVELS="${LEVELS:-50 100 200 500 1000 2000}"
 DURATION="${DURATION:-60s}"

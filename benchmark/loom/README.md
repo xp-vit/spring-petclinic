@@ -104,7 +104,7 @@ Results land in `benchmark/results/local-loom/` (`comparison.txt` + per-run `*-s
 ### AWS (the headline run)
 
 ```bash
-AWS_PROFILE=govplus-development ./benchmark/scripts/benchmark-loom-aws.sh
+AWS_PROFILE=<your-aws-profile> ./benchmark/scripts/benchmark-loom-aws.sh
 ```
 
 Provisions the v2 Terraform stack, builds + pushes the image, runs every combination

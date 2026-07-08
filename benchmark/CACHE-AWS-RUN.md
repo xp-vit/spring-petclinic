@@ -7,7 +7,7 @@ external cache earns its keep.
 ## One command
 
 ```bash
-AWS_PROFILE=govplus-development ./benchmark/scripts/benchmark-cache-aws.sh
+AWS_PROFILE=<your-aws-profile> ./benchmark/scripts/benchmark-cache-aws.sh
 ```
 
 That orchestrator (local) drives everything: `terraform apply`, build + push `petclinic:jvm`
@@ -30,7 +30,7 @@ S3, print the comparison table, then `terraform destroy`.
 
 | var | default | note |
 |-----|---------|------|
-| `AWS_PROFILE` | `govplus-development` | SSO; expires ~2-3h, re-login before final S3 sync/destroy |
+| `AWS_PROFILE` | `<your-aws-profile>` | SSO; expires ~2-3h, re-login before final S3 sync/destroy |
 | `AWS_REGION` | `eu-central-1` | |
 | `VARIANTS` | `cache-none cache-caffeine cache-redis` | |
 | `WORKLOADS` | `vets stats` | |

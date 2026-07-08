@@ -98,6 +98,39 @@ timestamp. Peak app heap (MB) during each level, `/api/slow`:
 
 Per-level detail: `results-perlevel.csv`.
 
+## 5. The fair fight — "just add platform threads" (local, 2 vCPU / 3 GB)
+
+The default-200 vs virtual comparison is a strawman unless you also try raising the platform
+pool. So we bumped Tomcat `threads.max` to 1000 and 2000 and re-ran `/api/slow`:
+
+| config | c1000 RPS / p50 | c2000 RPS / p50 | mem @c1000 |
+|--------|-----------------|-----------------|-----------|
+| platform@200  | 987 / 1007ms  | 984 / 2018ms  | 597 MB |
+| platform@1000 | **4851 / 202ms** | 4832 / 403ms  | 914 MB |
+| platform@2000 | 4828 / 202ms  | 2402 / 205ms  | 910 MB |
+| virtual       | **4843 / 202ms** | 2429 / 204ms  | 779 MB |
+
+**Yes — sizing the pool to the load fully closes the throughput gap.** platform@1000 at c1000
+matches virtual exactly (4851 vs 4843, both p50 202ms). For pure blocking work, `threads ≈
+concurrency` buys the same throughput. The gap doesn't vanish, though — it **moves**:
+
+1. **More memory at equal throughput.** 914 MB (platform@1000) vs 779 MB (virtual) at c1000 —
+   +135 MB of native thread stacks. **Correction to a common myth (and to an earlier draft of
+   this doc):** platform threads are often quoted at "~1 MB each" — that's *reserved* address
+   space, not committed RSS. Measured, an idle blocked stack commits far less: **~135 MB for
+   1000 threads ≈ ~135 KB each.** The penalty is real but ~7× smaller than the 1 MB figure
+   implies.
+2. **You must tune the pool to peak concurrency.** platform@1000 re-saturates at c2000 (p50
+   doubles to 403 ms — 2000 requests, 1000 threads, half queue); platform@2000 fixes that but
+   wastes memory at low load. Wrong size = throttle or bloat. Virtual self-scales — no number
+   to pick.
+3. **Threads can't buy cores.** At c2000 everything collapses to ~2400 RPS regardless of mode —
+   the 2-vCPU wall.
+
+**Takeaway:** "just add threads" works for throughput *if* you own the tuning knob and pay
+per-thread stack. Virtual threads deliver the same throughput without that knob — that's the
+real win, not raw speed.
+
 ## Bottom line
 
 - Virtual threads win big **only** in the blocking + high-concurrency regime (here 4× at c1000).
@@ -106,6 +139,9 @@ Per-level detail: `results-perlevel.csv`.
   flag.
 - The throughput win **costs memory**: virtual used 2.2× the heap at c1000 (1082 vs 493 MB)
   because it keeps every in-flight request live. Budget heap for your peak concurrency.
+- **"Just add platform threads" also closes the throughput gap** — if you size the pool to peak
+  concurrency (platform@1000 == virtual at c1000). Virtual's edge is then *not* speed but no
+  pool to tune and lower per-thread cost (~135 KB committed stack each, not the myth's 1 MB).
 - Pinning: on JDK 25 the `synchronized` trap is largely closed (detection commands in the
   loom README; not a run axis because it's a non-event on this JDK).
 - Fastest ≠ right: weigh debuggability, pinning risk on older JDKs/libs, and downstream pool

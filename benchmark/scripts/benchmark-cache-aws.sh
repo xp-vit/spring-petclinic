@@ -14,7 +14,7 @@
 # Phases per workload per variant:  smoke (3m/20VU + think-time)  |  peak (3m/50VU/no-sleep)
 #
 # Usage:
-#   AWS_PROFILE=govplus-development ./benchmark/scripts/benchmark-cache-aws.sh
+#   AWS_PROFILE=<your-aws-profile> ./benchmark/scripts/benchmark-cache-aws.sh
 #
 # Env overrides:
 #   AWS_REGION, SSH_KEY, VARIANTS, WORKLOADS
@@ -29,7 +29,7 @@ TF_DIR="$BENCHMARK_DIR/terraform"
 RESULTS_DIR="$BENCHMARK_DIR/results/aws-cache"
 
 AWS_REGION="${AWS_REGION:-eu-central-1}"
-AWS_PROFILE="${AWS_PROFILE:-govplus-development}"
+AWS_PROFILE="${AWS_PROFILE:-default}"
 VARIANTS="${VARIANTS:-cache-none cache-caffeine cache-redis}"
 WORKLOADS="${WORKLOADS:-vets stats}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
