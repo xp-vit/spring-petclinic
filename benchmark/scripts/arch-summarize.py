@@ -107,7 +107,26 @@ for endpoint in ENDPOINTS:
             lines.append(f"{VENDOR_LABEL[vendor]:<22}{level:>6}{r[4]:>10.1f}{rng:>16}"
                          f"{r[7]:>8.1f}{r[8]:>8.1f}{r[9]:>8.1f}{r[11]:>7.2f}")
     lines.append("")
-    lines.append(f"  Peak sustained RPS ({ENDPOINT_LABEL[endpoint]}, err<1%):")
+    # --- SPEED: single-request latency at the lowest concurrency (no queuing) ---
+    speed_level = levels[0]
+    lines.append(f"  SPEED -- single-request latency @c{speed_level} (raw per-core speed, no queuing):")
+    speed = {}
+    for vendor in VENDORS:
+        match = [r for r in rows if r[0] == endpoint and r[1] == vendor and r[2] == speed_level]
+        if match:
+            speed[vendor] = match[0][7]  # p50 median
+            lines.append(f"    {VENDOR_LABEL[vendor]:<22} p50 {match[0][7]:7.1f}ms  "
+                         f"(p95 {match[0][8]:.1f}, p99 {match[0][9]:.1f})")
+    sbase = speed.get("c7i")
+    if sbase:
+        lines.append(f"    -- speed vs Intel c7i (lower ms = faster per request):")
+        for vendor in VENDORS:
+            if vendor in speed:
+                # positive % = that many percent SLOWER than Intel
+                lines.append(f"       {VENDOR_LABEL[vendor]:<22} {(speed[vendor] / sbase - 1) * 100:+6.1f}% latency vs Intel")
+    lines.append("")
+    # --- THROUGHPUT: peak sustained RPS at saturation ---
+    lines.append(f"  THROUGHPUT -- peak sustained RPS ({ENDPOINT_LABEL[endpoint]}, err<1%):")
     for vendor in VENDORS:
         key = (endpoint, vendor)
         if key in peaks:
@@ -116,7 +135,7 @@ for endpoint in ENDPOINTS:
     # relative to Intel baseline
     base = peaks.get((endpoint, "c7i"), (None,))[0]
     if base:
-        lines.append(f"    -- relative to Intel c7i (raw throughput, NOT yet price-normalized):")
+        lines.append(f"    -- throughput vs Intel c7i (raw, NOT yet price-normalized):")
         for vendor in VENDORS:
             key = (endpoint, vendor)
             if key in peaks:

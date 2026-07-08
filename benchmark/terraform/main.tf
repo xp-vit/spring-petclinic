@@ -216,11 +216,13 @@ resource "aws_instance" "benchmark" {
     # AWS CLI v2 via snap (Ubuntu 24.04 has no apt awscli)
     snap install aws-cli --classic
 
-    # k6
-    curl -fsSL https://dl.k6.io/key.gpg | gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+    # k6 (best-effort: the k6 apt repo has no arm64 package, and this app box does not
+    # need k6 anyway -- load is driven from the separate k6 EC2. Non-fatal so the arm64
+    # Graviton app instance still finishes user-data and writes the ready marker.)
+    curl -fsSL https://dl.k6.io/key.gpg | gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg || true
     echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" > /etc/apt/sources.list.d/k6.list
-    apt-get update
-    apt-get install -y k6
+    apt-get update || true
+    apt-get install -y k6 || true
 
     # Signal ready
     touch /tmp/user-data-done

@@ -51,12 +51,17 @@ def load_prices():
 
 
 def load_results():
-    """peak sustained (rps, level, p99) per (endpoint, vendor): max median-RPS at err<1%."""
+    """Returns (peaks, speed):
+       peaks[(endpoint,vendor)] = peak sustained throughput (max median-RPS at err<1%).
+       speed[(endpoint,vendor)] = single-request p50 at the lowest concurrency (raw speed).
+    """
     peaks = {}
+    rows = []
     f = D / "results.csv"
     if not f.is_file():
         sys.exit(f"ERROR: {f} not found -- run arch-summarize.py first")
     for row in csv.DictReader(open(f)):
+        rows.append(row)
         if float(row["err_pct"]) >= 1.0:
             continue
         key = (row["endpoint"], row["vendor"])
@@ -64,7 +69,16 @@ def load_results():
         if key not in peaks or rps > peaks[key]["rps"]:
             peaks[key] = {"rps": rps, "level": row["concurrency"],
                           "p99": float(row["p99_ms"]), "p50": float(row["p50_ms"])}
-    return peaks
+    # speed = p50 at the minimum concurrency level present per (endpoint, vendor)
+    speed = {}
+    minlvl = {}
+    for row in rows:
+        key = (row["endpoint"], row["vendor"])
+        lvl = int(row["concurrency"])
+        if key not in minlvl or lvl < minlvl[key]:
+            minlvl[key] = lvl
+            speed[key] = {"p50": float(row["p50_ms"]), "p99": float(row["p99_ms"]), "level": row["concurrency"]}
+    return peaks, speed
 
 
 def bar(ax, vals, title, ylabel, fmt="{:.0f}"):
@@ -82,7 +96,7 @@ def bar(ax, vals, title, ylabel, fmt="{:.0f}"):
 
 def main():
     prices, is_estimate = load_prices()
-    peaks = load_results()
+    peaks, speed = load_results()
     (D / "charts").mkdir(exist_ok=True)
     warn = "  [PRICES ESTIMATE -- verify before publish]" if is_estimate else ""
     region, date = prices.get("_region", "?"), prices.get("_date", "?")
@@ -128,6 +142,8 @@ def main():
          "peak sustained req/s", "{:.0f}", "Raw throughput (NOT price-normalized)"),
         ("p99-latency", {e: {v: peaks[(e, v)]["p99"] for v in VENDORS if (e, v) in peaks} for e in ENDPOINTS},
          "p99 latency (ms)", "{:.0f}", "p99 latency at peak throughput"),
+        ("speed-latency", {e: {v: speed[(e, v)]["p50"] for v in VENDORS if (e, v) in speed} for e in ENDPOINTS},
+         "single-request p50 (ms)", "{:.1f}", "SPEED: single-request latency (lower = faster per core)"),
     ]:
         fig, axes = plt.subplots(1, len(ENDPOINTS), figsize=(11, 5))
         for ax, endpoint in zip(axes, ENDPOINTS):
@@ -148,6 +164,16 @@ def main():
                 continue
             pk = peaks[(endpoint, v)]
             print(f"{v:<14}{pk['rps']:>10.0f}{prices[v]:>9.4f}{rpd[endpoint][v]:>13.0f}{cpm[endpoint][v]:>11.4f}")
+        # SPEED (single-request p50) vs Intel -- can diverge from throughput
+        sbase = speed.get((endpoint, "c7i"), {}).get("p50")
+        if sbase:
+            print("  single-request speed (p50, lower=faster):")
+            for v in VENDORS:
+                key = (endpoint, v)
+                if key in speed:
+                    d = (speed[key]["p50"] / sbase - 1) * 100
+                    tag = "same" if abs(d) < 2 else (f"{d:+.0f}% slower" if d > 0 else f"{-d:.0f}% faster")
+                    print(f"    {v:<6} p50 {speed[key]['p50']:6.1f}ms @c{speed[key]['level']}  ({tag} vs Intel)")
         # Graviton price/perf advantage vs Intel, compared to AWS's ~40% claim
         base = rpd[endpoint].get("c7i")
         grav = rpd[endpoint].get("c7g")

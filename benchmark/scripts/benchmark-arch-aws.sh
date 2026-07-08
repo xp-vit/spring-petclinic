@@ -220,14 +220,19 @@ for spec in $VENDORS; do
   run_endpoint render "$VTAG" "$ROWS"    # real
 
   app_run stop-infra "$ECR_URL" "$RDS_HOST" "$AWS_REGION" "$S3_BUCKET" || true
-  log "Uploading $VTAG app results to S3..."
+  # Durability: upload BOTH app and k6 results after EVERY vendor, and pull them straight
+  # down to the local results dir. The app instance is replaced (its /tmp wiped) next vendor,
+  # and a late failure auto-destroys the k6 box + S3 bucket -- so completed vendors must be
+  # persisted locally as we go, not only in a single end-of-run sync.
+  log "Uploading $VTAG results to S3 (app + k6)..."
   app_run upload "$ECR_URL" "$RDS_HOST" "$AWS_REGION" "$S3_BUCKET" || log "WARN: app upload failed ($VTAG)"
+  k6_run  upload "$APP_PRIVATE_IP" "$AWS_REGION" "$S3_BUCKET"        || log "WARN: k6 upload failed ($VTAG)"
+  log "Syncing S3 -> $RESULTS_DIR (durable local copy through $VTAG)"
+  mkdir -p "$RESULTS_DIR"
+  aws s3 sync "s3://${S3_BUCKET}/loom-results/" "$RESULTS_DIR/" --region "$AWS_REGION" || log "WARN: down-sync failed ($VTAG)"
 done
 
-log "Uploading k6 results to S3..."
-k6_run upload "$APP_PRIVATE_IP" "$AWS_REGION" "$S3_BUCKET" || log "WARN: k6 upload failed"
-
-log "Downloading from S3 -> $RESULTS_DIR"
+log "Final sync S3 -> $RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 aws s3 sync "s3://${S3_BUCKET}/loom-results/" "$RESULTS_DIR/" --region "$AWS_REGION"
 
