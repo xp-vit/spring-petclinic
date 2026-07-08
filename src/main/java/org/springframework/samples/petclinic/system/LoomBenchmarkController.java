@@ -17,6 +17,7 @@ package org.springframework.samples.petclinic.system;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.util.List;
 import java.util.Map;
 
 import org.springframework.context.annotation.Profile;
@@ -64,6 +65,11 @@ class LoomBenchmarkController {
 	@GetMapping("/api/cpu")
 	public @ResponseBody String cpu(@RequestParam(defaultValue = "500000") int iters) {
 		return Long.toString(this.service.cpu(iters));
+	}
+
+	@GetMapping("/api/render")
+	public @ResponseBody List<LoomBenchmarkService.OwnerDto> render(@RequestParam(defaultValue = "200") int rows) {
+		return this.service.render(rows);
 	}
 
 	@GetMapping("/api/threadstats")

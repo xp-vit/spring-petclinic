@@ -1,0 +1,16 @@
+# Multi-arch runtime image for the Graviton-vs-Intel-vs-AMD benchmark.
+#
+# The Spring Boot fat jar is architecture-independent bytecode, so it is built ONCE on the
+# host (./gradlew bootJar) and copied in here. Only the JRE base differs per architecture,
+# and eclipse-temurin:25-jre is a multi-arch manifest (linux/amd64 + linux/arm64), so a
+# single `docker buildx --platform linux/amd64,linux/arm64` produces one manifest-list tag
+# that runs natively on all three vendors. No compilation happens under emulation, so the
+# arm64 image builds as fast as the amd64 one (it is just a layer copy).
+#
+# Build context is expected to contain app.jar at its root (the orchestrator stages it).
+FROM eclipse-temurin:25-jre
+WORKDIR /app
+COPY app.jar app.jar
+RUN mkdir -p /var/log/petclinic
+EXPOSE 8080
+ENTRYPOINT ["java", "-Xlog:gc*,gc+heap=debug:file=/var/log/petclinic/gc.log:time,level,tags", "-jar", "app.jar"]

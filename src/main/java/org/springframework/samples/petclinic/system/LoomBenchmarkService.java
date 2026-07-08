@@ -15,6 +15,9 @@
  */
 package org.springframework.samples.petclinic.system;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -105,6 +108,45 @@ public class LoomBenchmarkService {
 			acc = acc * 31 + Long.hashCode(acc ^ (i * 2654435761L));
 		}
 		return acc;
+	}
+
+	/**
+	 * Builds a list of owner DTOs (with nested pets) and returns it so the normal Spring MVC
+	 * message converter chain serializes it to JSON with Jackson. Unlike {@link #cpu(int)}
+	 * this exercises the <em>real</em> request-handling hot path a JSON API spends its time in
+	 * (POJO construction + reflective Jackson serialization + HTTP write), driven by
+	 * synthetic data rather than a DB so the instance under test &mdash; not the database
+	 * &mdash; is what saturates. This is the "real workload" tier of the arch benchmark; the
+	 * cross-vendor comparison then reflects JIT code quality and serialization throughput on
+	 * each CPU, not database or network differences.
+	 * @param rows number of owner records to build and serialize
+	 * @return the owner list (serialized to JSON by the framework)
+	 */
+	public List<OwnerDto> render(int rows) {
+		List<OwnerDto> out = new ArrayList<>(rows);
+		for (int i = 0; i < rows; i++) {
+			List<PetDto> pets = new ArrayList<>(3);
+			for (int p = 0; p < 3; p++) {
+				pets.add(new PetDto("Pet-" + i + "-" + p, PET_TYPES[(i + p) % PET_TYPES.length],
+						"20%02d-%02d-15".formatted(p + 10, (i % 12) + 1)));
+			}
+			out.add(new OwnerDto(i, "First-" + i, "Last-" + i, i + " Test Street, Suite " + (i % 100),
+					CITIES[i % CITIES.length], "%010d".formatted(i), pets));
+		}
+		return out;
+	}
+
+	private static final String[] PET_TYPES = { "cat", "dog", "lizard", "snake", "bird", "hamster" };
+
+	private static final String[] CITIES = { "Madison", "Sun Prairie", "McFarland", "Waunakee", "Monona" };
+
+	/** Owner record serialized by Jackson on the real-workload path. */
+	public record OwnerDto(int id, String firstName, String lastName, String address, String city, String telephone,
+			List<PetDto> pets) {
+	}
+
+	/** Pet record nested inside {@link OwnerDto}. */
+	public record PetDto(String name, String type, String birthDate) {
 	}
 
 }

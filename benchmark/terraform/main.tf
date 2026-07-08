@@ -168,8 +168,28 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+# arm64 (Graviton) Ubuntu image for the app instance under test. Same Noble release,
+# arm64 build. Selected via var.app_arch; the k6 box (aws_instance.k6) always uses the
+# amd64 image above.
+data "aws_ami" "ubuntu_arm64" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*"]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+locals {
+  app_ami = var.app_arch == "arm64" ? data.aws_ami.ubuntu_arm64.id : data.aws_ami.ubuntu.id
+}
+
 resource "aws_instance" "benchmark" {
-  ami                    = data.aws_ami.ubuntu.id
+  ami                    = local.app_ami
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.benchmark.id]

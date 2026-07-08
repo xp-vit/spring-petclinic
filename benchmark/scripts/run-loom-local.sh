@@ -37,6 +37,7 @@ LEVELS="${2:-50 100 200 500 1000}"
 ENDPOINT="${ENDPOINT:-slow}"
 MS="${MS:-200}"
 ITERS="${ITERS:-500000}"
+ROWS="${ROWS:-200}"
 DURATION="${DURATION:-30s}"
 HIKARI_MAX_POOL="${HIKARI_MAX_POOL:-10}"
 
@@ -149,7 +150,7 @@ run_level() {
   docker run --rm --network host --user "$(id -u):$(id -g)" \
     -v "$BENCHMARK_DIR/k6:/scripts:ro" -v "$RESULTS_DIR:/out" \
     -e BASE_URL="http://localhost:${APP_PORT}" -e ENDPOINT="$ENDPOINT" \
-    -e MS="$MS" -e ITERS="$ITERS" -e CONCURRENCY="$level" -e DURATION="$DURATION" \
+    -e MS="$MS" -e ITERS="$ITERS" -e ROWS="$ROWS" -e CONCURRENCY="$level" -e DURATION="$DURATION" \
     grafana/k6:latest run \
     --summary-export="/out/${tag}-summary.json" \
     /scripts/loom-workload.js \
