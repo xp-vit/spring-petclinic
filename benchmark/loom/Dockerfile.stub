@@ -1,0 +1,7 @@
+# Slim, dependency-free async delay stub for the virtual-thread benchmark.
+FROM python:3.13-slim
+WORKDIR /app
+COPY slow-stub.py .
+EXPOSE 9090
+ENV PORT=9090
+ENTRYPOINT ["python3", "-u", "slow-stub.py"]
