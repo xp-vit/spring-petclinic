@@ -1,0 +1,52 @@
+# CRaC "onRefresh" checkpoint — the MODE TRAP, measured for comparison.
+#
+# -Dspring.context.checkpoint=onRefresh checkpoints the moment the Spring context
+# finishes refreshing: beans are created but NO business traffic has run, so the
+# JIT is COLD. Boot is near-native, but peak throughput must re-warm from
+# interpreted code just like a fresh JVM. This is the trap the blog calls out:
+# it looks like CRaC but throws away CRaC's headline benefit (warm-JIT peak).
+#
+# Self-contained: the checkpoint is created during `docker build` (warp engine
+# needs no privileges, so no RUN --security=insecure). No DB is contacted at
+# refresh because we do not warm; the pool connects lazily at restore.
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /app
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY src/ src/
+RUN ./gradlew bootJar -PwithCrac -x test -x checkstyleMain -x checkstyleTest -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon
+
+FROM azul/zulu-openjdk:25-jdk-crac AS checkpoint
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar /app/app.jar
+# The JDBC URL is resolved at refresh (build) and baked into the checkpoint, so
+# it must equal the restore target (CRaC does not re-resolve properties on
+# restore). Override per environment, e.g. --build-arg POSTGRES_URL=jdbc:...RDS...
+ARG POSTGRES_URL=jdbc:postgresql://localhost:5432/petclinic
+ENV POSTGRES_URL=${POSTGRES_URL}
+# Checkpoint at context-refresh. No DB is reachable during `docker build`, so we
+# make the refresh DB-free: skip sql.init, don't validate the pool at startup,
+# and pin the Hibernate dialect so it doesn't probe JDBC metadata. The real DB is
+# contacted lazily after restore. The JVM exits non-zero once the dump completes,
+# so we guard the RUN and assert the image was written instead.
+RUN set -e; \
+    java -Dspring.context.checkpoint=onRefresh \
+        -XX:CRaCCheckpointTo=/crac-files \
+        -Dspring.profiles.active=postgres,crac \
+        -Dspring.sql.init.mode=never \
+        -Dspring.datasource.hikari.initialization-fail-timeout=-1 \
+        -Dspring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect \
+        -Dspring.jpa.properties.hibernate.temp.use_jdbc_metadata_defaults=false \
+        -jar /app/app.jar || true; \
+    chmod -R a+rX /crac-files 2>/dev/null || true; \
+    ls -la /crac-files; \
+    test -n "$(ls -A /crac-files 2>/dev/null)"
+
+FROM azul/zulu-openjdk:25-jdk-crac
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar /app/app.jar
+COPY --from=checkpoint /crac-files/ /crac-files/
+COPY benchmark/docker/restore-or-start.sh /usr/local/bin/restore-or-start.sh
+RUN chmod +x /usr/local/bin/restore-or-start.sh
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/restore-or-start.sh"]

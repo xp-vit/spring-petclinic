@@ -1,0 +1,102 @@
+# PetClinic CRaC restore deployment — the "checkpoint-at-build-time, restore-on-
+# every-pod" pattern. The image (benchmark/docker/Dockerfile.crac-restore) bakes
+# a warm checkpoint at /crac-files; each pod restores a warm JVM via
+# restore-or-start.sh (falls back to a cold start on non-CRaC nodes).
+#
+# Engine = Azul Zulu Warp (default since Apr 2026): restore needs NO extra Linux
+# capabilities and NO privileged pod. The CRIU engine would need
+# CAP_CHECKPOINT_RESTORE (+ often SYS_PTRACE) and a permissive seccomp profile —
+# see the commented block below.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: petclinic-crac
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 8080
+  selector:
+    app: petclinic-crac
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: petclinic-crac
+  labels:
+    app: petclinic-crac
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: petclinic-crac
+  template:
+    metadata:
+      labels:
+        app: petclinic-crac
+    spec:
+      # --- Node homogeneity (silent-crash guard) --------------------------------
+      # warp restore replays the checkpoint host's CPU instruction set. Restoring
+      # on a node with fewer CPU features => SIGILL. Pin pods to a node pool whose
+      # CPU matches the build/checkpoint host. Arch MUST match (no x86_64 -> arm64).
+      # Alternatively checkpoint with -XX:CPUFeatures=generic (costs some peak
+      # throughput) to restore across a mixed pool.
+      nodeSelector:
+        kubernetes.io/arch: amd64
+        # node.kubernetes.io/instance-type: c7i.large   # match the checkpoint host
+      containers:
+        - name: workload
+          image: REGISTRY/petclinic:crac        # built by Dockerfile.crac-restore
+          imagePullPolicy: IfNotPresent
+          # Warp engine: no securityContext privileges required.
+          securityContext:
+            runAsNonRoot: false                  # restore re-maps the checkpoint's uid (0)
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          # --- CRIU engine ONLY (delete the block above, use this instead) ------
+          # securityContext:
+          #   runAsUser: 0
+          #   privileged: false
+          #   capabilities:
+          #     add: ["CHECKPOINT_RESTORE", "SYS_PTRACE"]   # CAP_CHECKPOINT_RESTORE = Linux 5.9+
+          #   seccompProfile:
+          #     type: Unconfined        # CRIU uses ptrace/process_vm_readv; hardened PSS will block it
+          env:
+            - name: POSTGRES_URL
+              value: jdbc:postgresql://petclinic-db:5432/petclinic
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: petclinic-db, key: username }
+            # --- Secrets-safe: these are read in afterRestore(), NEVER baked -----
+            # The checkpoint was warmed with a placeholder. CracSupport re-reads
+            # these from the live env after restore and re-applies the DB password
+            # to the Hikari pool. Rotating the Secret + restarting pods is enough;
+            # no secret ever lands in an image layer.
+            - name: POSTGRES_PASS
+              valueFrom:
+                secretKeyRef: { name: petclinic-db, key: password }
+            - name: PETCLINIC_API_SECRET
+              valueFrom:
+                secretKeyRef: { name: petclinic-api, key: token }
+          ports:
+            - name: http
+              containerPort: 8080
+          # Restore is ~tens of ms; give the JVM a small head start then probe a
+          # BUSINESS endpoint (not just health) so traffic only arrives once the
+          # warm app truly serves.
+          startupProbe:
+            httpGet: { path: /vets, port: http, httpHeaders: [{ name: Accept, value: application/json }] }
+            failureThreshold: 30
+            periodSeconds: 1
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "1", memory: 512Mi }
+            limits:   { cpu: "2", memory: 768Mi }   # warm heap is restored => higher cold RSS than a fresh JVM

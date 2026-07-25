@@ -1,0 +1,20 @@
+# Fair JVM baseline for the CRaC comparison: the SAME Azul Zulu CRaC JDK build as
+# the crac variant, but run as a plain cold JVM (no checkpoint, no restore, CRaC
+# disabled). This isolates the confounder — crac vs crac-jvm differ ONLY by
+# checkpoint/restore, not by JDK distribution. (The main `jvm` variant uses
+# Temurin; report crac-jvm alongside it so readers can separate "CRaC effect"
+# from "Zulu-vs-Temurin effect".)
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /app
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY src/ src/
+RUN ./gradlew bootJar -x test -x checkstyleMain -x checkstyleTest -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon
+
+FROM azul/zulu-openjdk:25-jdk-crac
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar /app/app.jar
+RUN mkdir -p /var/log/petclinic
+EXPOSE 8080
+# CRaC NOT enabled: plain postgres profile, GC logging to match the jvm variant.
+ENTRYPOINT ["java", "-Xlog:gc*,gc+heap=debug:file=/var/log/petclinic/gc.log:time,level,tags", "-Dspring.profiles.active=postgres", "-jar", "app.jar"]
