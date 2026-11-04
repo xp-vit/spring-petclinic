@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="314" viewBox="0 0 760 314" font-family="system-ui,sans-serif" font-size="13">
+<style>text{fill:#222}.g{stroke:#ddd}.b{fill:#3b6ea5}.n{fill:#777;font-size:11px}@media (prefers-color-scheme:dark){text{fill:#eee}.g{stroke:#444}.b{fill:#6fa0d8}.n{fill:#aaa}}</style>
+<rect width="760" height="314" fill="none"/>
+<text x="250" y="22" font-weight="600">Cold start: docker run to first 200 on /vets (ms, log scale, n=1 each)</text>
+<line class="g" x1="250.0" y1="40" x2="250.0" y2="270"/><text class="n" x="250.0" y="284" text-anchor="middle">100</text>
+<line class="g" x1="330.9" y1="40" x2="330.9" y2="270"/><text class="n" x="330.9" y="284" text-anchor="middle">300</text>
+<line class="g" x1="419.6" y1="40" x2="419.6" y2="270"/><text class="n" x="419.6" y="284" text-anchor="middle">1,000</text>
+<line class="g" x1="500.4" y1="40" x2="500.4" y2="270"/><text class="n" x="500.4" y="284" text-anchor="middle">3,000</text>
+<line class="g" x1="589.1" y1="40" x2="589.1" y2="270"/><text class="n" x="589.1" y="284" text-anchor="middle">10,000</text>
+<line class="g" x1="670.0" y1="40" x2="670.0" y2="270"/><text class="n" x="670.0" y="284" text-anchor="middle">30,000</text>
+<text x="242" y="66.0" text-anchor="end">JVM (Temurin 25)</text>
+<rect class="b" x="250" y="48" width="388.5" height="28" rx="2"/>
+<text x="644.5" y="66.0" font-weight="600">19,547</text>
+<text class="n" x="242" y="86" text-anchor="end">2026-07-19 session</text>
+<text x="242" y="112.0" text-anchor="end">JVM on Zulu CRaC distro, CRaC off</text>
+<rect class="b" x="250" y="94" width="389.9" height="28" rx="2"/>
+<text x="645.9" y="112.0" font-weight="600">19,932</text>
+<text class="n" x="242" y="132" text-anchor="end">2026-07-19 session</text>
+<text x="242" y="158.0" text-anchor="end">CRaC onRefresh checkpoint</text>
+<rect class="b" x="250" y="140" width="241.7" height="28" rx="2"/>
+<text x="497.7" y="158.0" font-weight="600">2,663</text>
+<text class="n" x="242" y="178" text-anchor="end">2026-07-19 session</text>
+<text x="242" y="204.0" text-anchor="end">CRaC warmed checkpoint</text>
+<rect class="b" x="250" y="186" width="75.0" height="28" rx="2"/>
+<text x="331.0" y="204.0" font-weight="600">277</text>
+<text class="n" x="242" y="224" text-anchor="end">2026-07-19 session</text>
+<text x="242" y="250.0" text-anchor="end">GraalVM native</text>
+<rect class="b" x="250" y="232" width="68.9" height="28" rx="2"/>
+<text x="324.9" y="250.0" font-weight="600">255</text>
+<text class="n" x="242" y="270" text-anchor="end">file dated 2026-05-26, see caveats</text>
+<text class="n" x="10" y="306">AWS c7i.large, 1 vCPU / 512 MiB container cap. Probe interval ~57 ms.</text>
+</svg>
