@@ -1,0 +1,22 @@
+# CRaC warmup image: packages the app jar on an Azul Zulu CRaC JDK (engine=warp,
+# needs no privileges) plus curl + the warmup entrypoint. Running this image
+# starts the app, warms the JIT, and writes a warm checkpoint to /crac-files.
+# It is NOT the deployed image — make-crac-checkpoint.sh runs it to produce the
+# checkpoint, which is then baked into Dockerfile.crac-restore.
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /app
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY src/ src/
+RUN ./gradlew bootJar -PwithCrac -x test -x checkstyleMain -x checkstyleTest -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon
+
+FROM azul/zulu-openjdk:25-jdk-crac
+WORKDIR /app
+RUN (apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*) \
+ || (microdnf install -y curl && microdnf clean all)
+COPY --from=build /app/build/libs/*.jar /app/app.jar
+COPY benchmark/docker/crac-warmup-entrypoint.sh /usr/local/bin/crac-warmup-entrypoint.sh
+COPY benchmark/docker/restore-or-start.sh /usr/local/bin/restore-or-start.sh
+RUN chmod +x /usr/local/bin/crac-warmup-entrypoint.sh /usr/local/bin/restore-or-start.sh
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/crac-warmup-entrypoint.sh"]

@@ -1,0 +1,32 @@
+# CRaC restore (deployed) image: the warm checkpoint produced by the warmup run
+# is baked in at /crac-files, and every container RESTORES from it on start —
+# near-native boot WITH warm-JIT peak throughput. Falls back to a cold start via
+# restore-or-start.sh if the checkpoint is missing (e.g. non-CRaC node).
+#
+# Build context must contain ./crac-files (produced by make-crac-checkpoint.sh)
+# and the app jar at build/libs/.
+#
+# Base MUST match the warmup image (azul/zulu-openjdk:25-jdk-crac): the warp
+# engine memory-maps the JVM's shared libraries and re-opens them by exact path
+# + build-id on restore, so the JDK must be byte-identical at the same paths.
+# A jre-crac base fails restore with "Cannot open .../libjvm.so".
+#
+# SECURITY: the checkpoint is a JVM memory dump. It is warmed with a PLACEHOLDER
+# secret only; real secrets/DB creds are re-read from env in afterRestore(), so
+# nothing sensitive is baked into this image layer. See CracSupport.java.
+FROM eclipse-temurin:25-jdk AS build
+WORKDIR /app
+COPY gradlew settings.gradle build.gradle ./
+COPY gradle/ gradle/
+COPY src/ src/
+RUN ./gradlew bootJar -x test -x checkstyleMain -x checkstyleTest -x checkstyleNohttp -x checkFormatMain -x checkFormatTest --no-daemon
+
+FROM azul/zulu-openjdk:25-jdk-crac
+WORKDIR /app
+COPY --from=build /app/build/libs/*.jar /app/app.jar
+# Baked warm checkpoint (path MUST match CRaCCheckpointTo used at warmup: /crac-files)
+COPY crac-files/ /crac-files/
+COPY benchmark/docker/restore-or-start.sh /usr/local/bin/restore-or-start.sh
+RUN chmod +x /usr/local/bin/restore-or-start.sh
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/restore-or-start.sh"]

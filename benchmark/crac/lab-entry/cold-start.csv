@@ -1,0 +1,6 @@
+variant,label,cold_start_ms,n_runs,session
+jvm,JVM (Temurin 25),19547,1,2026-07-19
+crac-jvm,JVM on Zulu CRaC distro (CRaC off),19932,1,2026-07-19
+crac-onrefresh,CRaC onRefresh checkpoint,2663,1,2026-07-19
+crac,CRaC warmed checkpoint,277,1,2026-07-19
+native,GraalVM native,255,1,2026-05-26 (file; July probe log ~256)

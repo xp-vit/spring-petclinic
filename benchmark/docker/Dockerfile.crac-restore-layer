@@ -1,0 +1,11 @@
+# Portable restore image: layers the warm checkpoint onto the SAME warmup image
+# it was produced from. Because the base, JDK paths and jar are byte-identical to
+# the checkpoint's, warp restore always finds its mapped files. Used by
+# make-crac-checkpoint.sh so the checkpoint can be created on the target host
+# (e.g. the c7i.large EC2) without shipping source there or rebuilding the jar.
+#
+# Build context must contain ./crac-files (from the warmup run on THIS host).
+ARG WARMUP_IMAGE=petclinic:crac-warmup
+FROM ${WARMUP_IMAGE}
+COPY crac-files/ /crac-files/
+ENTRYPOINT ["/usr/local/bin/restore-or-start.sh"]

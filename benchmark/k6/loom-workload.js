@@ -12,9 +12,10 @@ import { Trend, Rate } from 'k6/metrics';
 //
 // Env knobs:
 //   BASE_URL     app base url (default http://localhost:8080)
-//   ENDPOINT     slow | slow-db | cpu          (default slow)
+//   ENDPOINT     slow | slow-db | cpu | render  (default slow)
 //   MS           downstream delay ms for slow/slow-db (default 200)
 //   ITERS        cpu iterations for the cpu endpoint (default 500000)
+//   ROWS         owner rows to serialize for the render endpoint (default 200)
 //   CONCURRENCY  number of VUs = concurrency level (default 200)
 //   DURATION     steady-state window incl. warmup (default 60s)
 //
@@ -26,6 +27,7 @@ const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 const ENDPOINT = __ENV.ENDPOINT || 'slow';
 const MS = __ENV.MS || '200';
 const ITERS = __ENV.ITERS || '500000';
+const ROWS = __ENV.ROWS || '200';
 const CONCURRENCY = parseInt(__ENV.CONCURRENCY || '200', 10);
 const DURATION = __ENV.DURATION || '60s';
 
@@ -47,6 +49,7 @@ function url() {
 	if (ENDPOINT === 'slow') return `${BASE_URL}/api/slow?ms=${MS}`;
 	if (ENDPOINT === 'slow-db') return `${BASE_URL}/api/slow-db?ms=${MS}`;
 	if (ENDPOINT === 'cpu') return `${BASE_URL}/api/cpu?iters=${ITERS}`;
+	if (ENDPOINT === 'render') return `${BASE_URL}/api/render?rows=${ROWS}`;
 	throw new Error(`unknown ENDPOINT: ${ENDPOINT}`);
 }
 

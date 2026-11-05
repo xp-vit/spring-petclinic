@@ -10,6 +10,16 @@ variable "instance_type" {
   default     = "c7i.large"
 }
 
+variable "app_arch" {
+  description = "CPU architecture of the app instance under test: amd64 (Intel c7i / AMD c7a) or arm64 (Graviton c7g). Selects the matching Ubuntu AMI. The k6 box stays amd64."
+  type        = string
+  default     = "amd64"
+  validation {
+    condition     = contains(["amd64", "arm64"], var.app_arch)
+    error_message = "app_arch must be amd64 or arm64."
+  }
+}
+
 variable "ssh_public_key" {
   description = "Path to SSH public key for EC2 access"
   type        = string

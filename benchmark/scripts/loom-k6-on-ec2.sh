@@ -3,11 +3,12 @@
 # concurrency levels for one (endpoint, mode) combination. For each level it also samples the
 # app's /api/threadstats so we can chart live PLATFORM thread count vs concurrency.
 #
-# Args: ACTION APP_IP AWS_REGION S3_BUCKET [ENDPOINT [MS [ITERS [TAG [LEVELS [DURATION]]]]]]
+# Args: ACTION APP_IP AWS_REGION S3_BUCKET [ENDPOINT [MS [ITERS [TAG [LEVELS [DURATION [ROWS]]]]]]]
 #   ACTION   = run | upload
-#   ENDPOINT = slow | slow-db | cpu
-#   TAG      = label shared with the app side, e.g. slow-platform / slowdb-h100 / cpu-virtual
+#   ENDPOINT = slow | slow-db | cpu | render
+#   TAG      = label shared with the app side, e.g. slow-platform / cpu-c7i / render-c7g
 #   LEVELS   = space-separated concurrency levels (quote it as one arg)
+#   ROWS     = owner rows for the render endpoint (default 200; ignored by other endpoints)
 set -euo pipefail
 
 ACTION="${1:?ACTION required}"
@@ -20,6 +21,7 @@ ITERS="${7:-500000}"
 TAG="${8:-run}"
 LEVELS="${9:-50 100 200 500 1000 2000}"
 DURATION="${10:-60s}"
+ROWS="${11:-200}"
 
 RESULTS_DIR="/tmp/benchmark-results"
 APP_PORT=8080
@@ -48,7 +50,7 @@ case "$ACTION" in
       k6 run \
         --summary-export "$RESULTS_DIR/${TAG}-c${lvl}-summary.json" \
         -e BASE_URL="$base_url" -e ENDPOINT="$ENDPOINT" \
-        -e MS="$MS" -e ITERS="$ITERS" -e CONCURRENCY="$lvl" -e DURATION="$DURATION" \
+        -e MS="$MS" -e ITERS="$ITERS" -e ROWS="$ROWS" -e CONCURRENCY="$lvl" -e DURATION="$DURATION" \
         /tmp/k6/loom-workload.js 2>&1 | tee "$RESULTS_DIR/${TAG}-c${lvl}-output.txt"
       kill "$spid" 2>/dev/null || true
     done

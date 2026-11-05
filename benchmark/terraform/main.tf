@@ -168,8 +168,28 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+# arm64 (Graviton) Ubuntu image for the app instance under test. Same Noble release,
+# arm64 build. Selected via var.app_arch; the k6 box (aws_instance.k6) always uses the
+# amd64 image above.
+data "aws_ami" "ubuntu_arm64" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*"]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+locals {
+  app_ami = var.app_arch == "arm64" ? data.aws_ami.ubuntu_arm64.id : data.aws_ami.ubuntu.id
+}
+
 resource "aws_instance" "benchmark" {
-  ami                    = data.aws_ami.ubuntu.id
+  ami                    = local.app_ami
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.benchmark.id]
@@ -196,11 +216,13 @@ resource "aws_instance" "benchmark" {
     # AWS CLI v2 via snap (Ubuntu 24.04 has no apt awscli)
     snap install aws-cli --classic
 
-    # k6
-    curl -fsSL https://dl.k6.io/key.gpg | gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg
+    # k6 (best-effort: the k6 apt repo has no arm64 package, and this app box does not
+    # need k6 anyway -- load is driven from the separate k6 EC2. Non-fatal so the arm64
+    # Graviton app instance still finishes user-data and writes the ready marker.)
+    curl -fsSL https://dl.k6.io/key.gpg | gpg --dearmor -o /usr/share/keyrings/k6-archive-keyring.gpg || true
     echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" > /etc/apt/sources.list.d/k6.list
-    apt-get update
-    apt-get install -y k6
+    apt-get update || true
+    apt-get install -y k6 || true
 
     # Signal ready
     touch /tmp/user-data-done

@@ -3,6 +3,9 @@
 build
 target
 benchmark
+!benchmark/docker/crac-warmup-entrypoint.sh
+!benchmark/docker/restore-or-start.sh
+!crac-files
 k8s
 .devcontainer
 .github

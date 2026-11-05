@@ -45,6 +45,16 @@ dependencies {
   runtimeOnly "org.webjars.npm:bootstrap:${webjarsBootstrapVersion}"
   runtimeOnly "org.webjars.npm:font-awesome:${webjarsFontawesomeVersion}"
   implementation 'com.github.ben-manes.caffeine:caffeine'
+  // CRaC (Coordinate Restore at Checkpoint) API. compileOnly so CracSupport.java
+  // compiles for every build, but it is put on the RUNTIME classpath ONLY for the
+  // crac variant (-PwithCrac). Keeping it off the jvm/native runtime avoids Spring
+  // Boot's HikariCheckpointRestoreLifecycle, whose static init needs reflection
+  // GraalVM native lacks — it crashes the native image at boot otherwise.
+  // Version managed by the Spring Boot BOM.
+  compileOnly 'org.crac:crac'
+  if (project.hasProperty('withCrac')) {
+    runtimeOnly 'org.crac:crac'
+  }
   runtimeOnly 'com.h2database:h2'
   runtimeOnly 'com.mysql:mysql-connector-j'
   runtimeOnly 'org.postgresql:postgresql'
